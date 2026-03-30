@@ -1,0 +1,19 @@
+{
+  "name": "irc-hispano-client",
+  "version": "1.0.0",
+  "description": "Cliente IRC personal para irc-hispano.org",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "mime-types": "^2.1.35",
+    "multer": "^2.1.1",
+    "socks": "^2.7.1",
+    "uuid": "^9.0.0",
+    "ws": "^8.14.2"
+  }
+}
