@@ -10,25 +10,58 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install
+      - name: Install dependencies
         run: npm install --production
-      - name: Start server
+      - name: Start IRC Hispano server
         run: PORT=3000 RENDER=true node server.js &
-      - name: Wait ready
-        run: sleep 5 && curl -sf http://localhost:3000 && echo "OK"
-      - name: Tunnel and publish URL
+      - name: Wait for server ready
         run: |
-          npm install -g localtunnel
-          lt --port 3000 > /tmp/lt.log 2>&1 &
-          sleep 12
-          URL=$(grep -oP 'https://[^\s]+\.loca\.lt' /tmp/lt.log | head -1)
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:3000 > /dev/null 2>&1 && echo "Server ready!" && break
+            echo "Waiting ($i/15)..."
+            sleep 2
+          done
+      - name: Install cloudflared
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+      - name: Create Cloudflare Quick Tunnel and publish URL
+        run: |
+          cloudflared tunnel --url http://localhost:3000 --no-autoupdate 2>&1 | tee /tmp/cf.log &
+          CF_PID=$!
+          
+          echo "Waiting for tunnel URL..."
+          for i in $(seq 1 30); do
+            URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
+            if [ -n "$URL" ]; then
+              echo ""
+              echo "========================================"
+              echo "  URL PUBLICA IRC: $URL"
+              echo "========================================"
+              break
+            fi
+            sleep 3
+          done
+          
+          if [ -z "$URL" ]; then
+            echo "ERROR: No se pudo obtener URL del tunnel"
+            cat /tmp/cf.log
+            exit 1
+          fi
+          
           echo "PUBLIC_URL=$URL" >> $GITHUB_ENV
-          echo "======== URL PUBLICA: $URL ========"
+          
           SHA=$(git rev-parse HEAD)
           curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" \
-            --data "{\"state\":\"success\",\"target_url\":\"$URL\",\"description\":\"$URL\",\"context\":\"deployment/live-url\"}"
-      - name: Keep alive 2h
-        run: sleep 7200
+            -d "{\"state\":\"success\",\"target_url\":\"$URL\",\"description\":\"$URL\",\"context\":\"deployment/live-url\"}"
+          
+          echo "Commit status publicado: $URL"
+      - name: Keep server alive (2h max)
+        run: |
+          echo "Servidor activo en: $PUBLIC_URL"
+          echo "Se apagara automaticamente en 2 horas."
+          sleep 7200
