@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: irc-hispano-client
+    env: node
+    plan: free
+    buildCommand: npm install --production
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER
+        value: "true"
