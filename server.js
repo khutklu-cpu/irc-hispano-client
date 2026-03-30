@@ -341,7 +341,8 @@ wss.on('connection', (ws, req) => {
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '127.0.0.1', () => {
+const HOST = process.env.RENDER || process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '127.0.0.1';
+server.listen(PORT, HOST, () => {
   console.log(`\n╔══════════════════════════════════════╗`);
   console.log(`║   IRC Hispano Web Client             ║`);
   console.log(`║   http://127.0.0.1:${PORT}             ║`);
