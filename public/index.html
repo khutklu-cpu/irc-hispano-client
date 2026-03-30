@@ -51,11 +51,11 @@
             <input type="text"     id="proxy-user" placeholder="Usuario (opcional)" autocomplete="off">
             <input type="password" id="proxy-pass" placeholder="Contraseña (opcional)">
           </div>
-          <button class="btn-tor" onclick="useTor()">Usar Tor automáticamente</button>
+          <button class="btn-tor">Usar Tor automáticamente</button>
         </div>
       </details>
 
-      <button id="btn-connect" onclick="doConnect()">Conectar como Invitado</button>
+      <button id="btn-connect">Conectar como Invitado</button>
       <div id="connect-status"></div>
     </div>
   </div>
@@ -71,9 +71,9 @@
         <span id="tb-server">irc.irc-hispano.org</span>
       </div>
       <div id="topbar-right">
-        <button class="tb-btn" onclick="showJoinDialog()" title="Unirse a canal">&#x2795; Canal</button>
-        <button class="tb-btn" onclick="showQueryDialog()" title="Mensaje privado">&#x2709; Privado</button>
-        <button class="tb-btn danger" onclick="doDisconnect()" title="Desconectar">&#x23FB;</button>
+        <button class="tb-btn" title="Unirse a canal">&#x2795; Canal</button>
+        <button class="tb-btn" title="Mensaje privado">&#x2709; Privado</button>
+        <button class="tb-btn danger" title="Desconectar">&#x23FB;</button>
       </div>
     </header>
 
@@ -90,7 +90,7 @@
       <nav id="sidebar">
         <div class="sidebar-section">
           <div class="sidebar-title">SERVIDOR</div>
-          <div class="tree-item active" data-target="*status*" onclick="switchWindow('*status*')">
+          <div class="tree-item active" data-target="*status*">
             <span class="ti-icon">&#x1F4E1;</span> Status
           </div>
         </div>
@@ -129,9 +129,9 @@
                  autocomplete="off" spellcheck="false" maxlength="512">
           <label class="attach-btn" title="Adjuntar archivo">
             &#x1F4CE;
-            <input type="file" id="file-input" style="display:none" onchange="uploadFile(this)">
+            <input type="file" id="file-input" style="display:none">
           </label>
-          <button id="send-btn" onclick="sendInput()">Enviar</button>
+          <button id="send-btn">Enviar</button>
         </div>
       </div>
       <div id="status-bar">
@@ -142,12 +142,12 @@
   </div>
 
   <!-- ══ Diálogos modales ══ -->
-  <div id="modal-overlay" class="hidden" onclick="closeModal()">
-    <div id="modal-box" onclick="event.stopPropagation()">
+  <div id="modal-overlay" class="hidden">
+    <div id="modal-box">
       <div id="modal-title"></div>
       <div id="modal-body"></div>
       <div id="modal-footer">
-        <button onclick="closeModal()">Cancelar</button>
+        <button>Cancelar</button>
         <button id="modal-ok" class="btn-ok">Aceptar</button>
       </div>
     </div>
