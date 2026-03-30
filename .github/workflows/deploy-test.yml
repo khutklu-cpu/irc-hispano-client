@@ -1,6 +1,9 @@
 name: Deploy IRC Hispano (Test)
 on:
   workflow_dispatch:
+permissions:
+  contents: write
+  statuses: write
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -23,45 +26,42 @@ jobs:
           done
       - name: Install cloudflared
         run: |
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
           chmod +x /usr/local/bin/cloudflared
-          cloudflared --version
-      - name: Create Cloudflare Quick Tunnel and publish URL
+      - name: Start tunnel and write URL to repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cloudflared tunnel --url http://localhost:3000 --no-autoupdate 2>&1 | tee /tmp/cf.log &
-          CF_PID=$!
+          cloudflared tunnel --url http://localhost:3000 --no-autoupdate > /tmp/cf.log 2>&1 &
           
-          echo "Waiting for tunnel URL..."
-          for i in $(seq 1 30); do
+          echo "Waiting for Cloudflare URL..."
+          URL=""
+          for i in $(seq 1 40); do
             URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1)
-            if [ -n "$URL" ]; then
-              echo ""
-              echo "========================================"
-              echo "  URL PUBLICA IRC: $URL"
-              echo "========================================"
-              break
-            fi
+            [ -n "$URL" ] && break
             sleep 3
           done
           
           if [ -z "$URL" ]; then
-            echo "ERROR: No se pudo obtener URL del tunnel"
             cat /tmp/cf.log
             exit 1
           fi
           
-          echo "PUBLIC_URL=$URL" >> $GITHUB_ENV
+          echo "URL: $URL"
           
-          SHA=$(git rev-parse HEAD)
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" \
-            -d "{\"state\":\"success\",\"target_url\":\"$URL\",\"description\":\"$URL\",\"context\":\"deployment/live-url\"}"
+          # Escribir URL en el repo via git push
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          echo "$URL" > LIVE_URL.txt
+          git add LIVE_URL.txt
+          git commit -m "ci: URL activa del servidor = $URL"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" main
           
-          echo "Commit status publicado: $URL"
-      - name: Keep server alive (2h max)
+          echo "========================================"
+          echo "  SERVIDOR ACTIVO EN: $URL"
+          echo "========================================"
+      - name: Keep alive (2h)
         run: |
-          echo "Servidor activo en: $PUBLIC_URL"
-          echo "Se apagara automaticamente en 2 horas."
+          echo "Servidor corriendo. Se detendra en 2 horas."
           sleep 7200
