@@ -62,6 +62,20 @@ function doConnect() {
   byId('btn-connect').disabled = true;
   setConnectStatus('Conectando...', false);
 
+  // Reutilizar WebSocket existente si ya está abierto
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: 'CONNECT', proxy }));
+    state.pendingChannels = channels;
+    return;
+  }
+
+  // Cerrar WebSocket anterior si existe
+  if (state.ws) {
+    state.ws.onclose = null; // evitar handler obsoleto
+    state.ws.close();
+    state.ws = null;
+  }
+
   const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${wsProto}//${location.host}/ws`);
   state.ws = ws;
@@ -78,14 +92,19 @@ function doConnect() {
   });
 
   ws.addEventListener('close', () => {
-    setStatus('Desconectado');
-    byId('sb-status').textContent = 'Desconectado';
+    if (state.ws === ws) {
+      setStatus('Desconectado');
+      byId('sb-status').textContent = 'Desconectado';
+      byId('btn-connect').disabled = false;
+      state.ws = null;
+    }
   });
 
   ws.addEventListener('error', () => {
     setConnectStatus('Error de WebSocket', true);
     byId('btn-connect').disabled = false;
   });
+}
 }
 
 function doDisconnect() {
@@ -133,8 +152,9 @@ function handleServerMsg(msg) {
       break;
 
     case 'DISCONNECTED':
-      setStatus('Desconectado — reconectando...');
-      addSystemMsg('*status*', 'Conexión perdida. Reconectando en 15 segundos...');
+      setStatus('Desconectado');
+      addSystemMsg('*status*', 'Conexión perdida. El servidor intentará reconectar automáticamente...');
+      byId('btn-connect').disabled = false;
       break;
 
     case 'STATUS':
@@ -155,13 +175,14 @@ function handleServerMsg(msg) {
       addErrMsg('*status*', `Tu IP ha sido baneada por irc-hispano: ${esc(msg.message)}`);
       addSystemMsg('*status*', 'Configura un proxy SOCKS5 o VPN en la pantalla de conexión y vuelve a intentarlo.');
       byId('btn-connect').disabled = false;
+      // Cerrar WebSocket actual para que el próximo intento arranque limpio
+      if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
       // Volver a pantalla de conexión
       setTimeout(() => {
         byId('main-screen').classList.add('hidden');
         byId('connect-screen').classList.remove('hidden');
       }, 4000);
       break;
-
     case 'SERVER_ERROR':
       addErrMsg(state.currentWin, `[${msg.code}] ${msg.message}`);
       break;
