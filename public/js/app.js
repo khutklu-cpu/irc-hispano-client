@@ -105,7 +105,6 @@ function doConnect() {
     byId('btn-connect').disabled = false;
   });
 }
-}
 
 function doDisconnect() {
   send({ type: 'DISCONNECT' });
