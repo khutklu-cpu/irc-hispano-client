@@ -183,6 +183,9 @@ wss.on('connection', (ws, req) => {
           send('ERROR', { message: msg });
         });
 
+        irc.on('banned', msg => {
+          send('BANNED', { message: msg });
+        });
         irc.on('status', msg => {
           send('STATUS', { message: msg });
         });
