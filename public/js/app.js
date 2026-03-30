@@ -150,6 +150,18 @@ function handleServerMsg(msg) {
       byId('btn-connect').disabled = false;
       break;
 
+    case 'BANNED':
+      setStatus('IP bloqueada (G-line) — usa un proxy SOCKS5');
+      addErrMsg('*status*', `Tu IP ha sido baneada por irc-hispano: ${esc(msg.message)}`);
+      addSystemMsg('*status*', 'Configura un proxy SOCKS5 o VPN en la pantalla de conexión y vuelve a intentarlo.');
+      byId('btn-connect').disabled = false;
+      // Volver a pantalla de conexión
+      setTimeout(() => {
+        byId('main-screen').classList.add('hidden');
+        byId('connect-screen').classList.remove('hidden');
+      }, 4000);
+      break;
+
     case 'SERVER_ERROR':
       addErrMsg(state.currentWin, `[${msg.code}] ${msg.message}`);
       break;
