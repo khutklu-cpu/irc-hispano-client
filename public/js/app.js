@@ -29,7 +29,18 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Cerrar ctx menu
   document.addEventListener('click', () => closeCtxMenu());
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeCtxMenu(); } });
+
+  // Botones — reemplazan onclick inline (bloqueados por CSP)
+  byId('btn-connect')  .addEventListener('click', doConnect);
+  byId('btn-tor')      ?.addEventListener('click', useTor);
+  byId('send-btn')     .addEventListener('click', sendInput);
+  byId('file-input')   .addEventListener('change', e => uploadFile(e.target));
+  document.querySelector('[data-target="*status*"]') ?.addEventListener('click', () => switchWindow('*status*'));
+  document.querySelector('.tb-btn.danger')           ?.addEventListener('click', doDisconnect);
+  document.querySelectorAll('.tb-btn')[0]            ?.addEventListener('click', showJoinDialog);
+  document.querySelectorAll('.tb-btn')[1]            ?.addEventListener('click', showQueryDialog);
+  byId('modal-overlay')  ?.addEventListener('click', closeModal);
+  byId('modal-box')      ?.addEventListener('click', e => e.stopPropagation());
 });
 
 /* ─── Conexión ─── */
