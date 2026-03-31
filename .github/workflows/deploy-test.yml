@@ -15,39 +15,119 @@ jobs:
           node-version: '22'
       - name: Install dependencies
         run: npm install --production
-      - name: Test WebSocket connectivity to KiwiIRC proxy
+
+      - name: Full IRC connection diagnostic
         run: |
-          echo "=== Proxy env vars ==="
-          echo "HTTP_PROXY: ${HTTP_PROXY:-none}"
-          echo "HTTPS_PROXY: ${HTTPS_PROXY:-none}"
-          echo "http_proxy: ${http_proxy:-none}"
-          echo "https_proxy: ${https_proxy:-none}"
-          echo "=== DNS check ==="
-          host kiwi.chathispano.com || true
-          echo "=== Port 9000 reachable? ==="
-          timeout 5 bash -c 'cat < /dev/null > /dev/tcp/kiwi.chathispano.com/9000' && echo "PORT 9000 OPEN" || echo "PORT 9000 BLOCKED"
-          echo "=== SockJS info ==="
-          curl -s "https://kiwi.chathispano.com:9000/webirc/kiwiirc/info"
-          echo ""
-          echo "=== Node WS test ==="
           node - << 'NODEEOF'
           const { WebSocket } = require('ws');
           const crypto = require('crypto');
-          const srv = String(Math.floor(Math.random()*900)+100);
-          const session = crypto.randomBytes(8).toString('hex');
-          const url = `wss://kiwi.chathispano.com:9000/webirc/kiwiirc/${srv}/${session}/websocket`;
-          console.log('URL:', url);
-          const ws = new WebSocket(url, {
-            headers: { 'Origin': 'https://chathispano.com' },
-            rejectUnauthorized: false
-          });
-          ws.on('open', () => console.log('WS OPEN - waiting for SockJS o frame'));
-          ws.on('message', d => { console.log('FRAME:', d.toString()); ws.close(); process.exit(0); });
-          ws.on('error', e => { console.log('ERROR:', e.message); process.exit(1); });
-          setTimeout(() => { console.log('TIMEOUT 10s'); process.exit(2); }, 10000);
+
+          const KIWI_HOST   = 'kiwi.chathispano.com';
+          const KIWI_SERVER = `https://${KIWI_HOST}:9000/webirc/kiwiirc/`;
+          const ports = [9000, 9001, 9002, 9004];
+
+          async function testPort(port) {
+            return new Promise((resolve) => {
+              const srv     = String(Math.floor(Math.random()*900)+100);
+              const session = crypto.randomBytes(8).toString('hex');
+              const url     = `wss://${KIWI_HOST}:${port}/webirc/kiwiirc/${srv}/${session}/websocket`;
+              console.log(`\n=== Puerto ${port} ===`);
+              console.log('URL:', url);
+
+              const ws = new WebSocket(url, {
+                headers: {
+                  'Origin': 'https://chathispano.com',
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+                },
+                rejectUnauthorized: false
+              });
+
+              const t = setTimeout(() => {
+                console.log(`[${port}] TIMEOUT 25s`);
+                ws.terminate();
+                resolve('timeout');
+              }, 25000);
+
+              let registrationTimer = null;
+
+              ws.on('open', () => console.log(`[${port}] WS OPEN`));
+
+              ws.on('message', (data) => {
+                const frame = data.toString();
+                console.log(`[${port}] FRAME: ${frame.slice(0, 500)}`);
+
+                if (frame === 'o') {
+                  // Test 1: con CONTROL START (URL completa)
+                  const ctrl = JSON.stringify([`:${KIWI_SERVER} CONTROL START`]);
+                  console.log(`[${port}] Enviando CONTROL START:`, ctrl);
+                  ws.send(ctrl);
+
+                  setTimeout(() => {
+                    const nick = 'DiagBot' + Math.floor(Math.random()*1000);
+                    console.log(`[${port}] Enviando NICK ${nick} + USER`);
+                    ws.send(JSON.stringify([`NICK ${nick}\r\n`]));
+                    ws.send(JSON.stringify(['USER kiwi 0 * :DiagBot ChatHispano\r\n']));
+
+                    // Si no hay respuesta en 15s = problema
+                    registrationTimer = setTimeout(() => {
+                      console.log(`[${port}] SIN RESPUESTA de IRC en 15s tras NICK/USER`);
+                      ws.terminate();
+                      resolve('no_irc_response');
+                    }, 15000);
+                  }, 300);
+                }
+
+                if (frame.startsWith('a')) {
+                  // Recibimos datos IRC
+                  try {
+                    const msgs = JSON.parse(frame.slice(1));
+                    for (const msg of msgs) {
+                      console.log(`[${port}] IRC DATA:`, msg.replace(/\r\n/g, '\\r\\n'));
+                      if (msg.includes('001')) {
+                        clearTimeout(registrationTimer);
+                        clearTimeout(t);
+                        console.log(`[${port}] *** CONECTADO A IRC (001 RPL_WELCOME) ***`);
+                        ws.terminate();
+                        resolve('connected');
+                      }
+                    }
+                  } catch(e) { console.log(`[${port}] Parse error:`, e.message); }
+                }
+
+                if (frame.startsWith('c')) {
+                  clearTimeout(registrationTimer);
+                  console.log(`[${port}] SockJS CLOSE:`, frame);
+                  clearTimeout(t);
+                  resolve('sockjs_close');
+                }
+              });
+
+              ws.on('error', (e) => {
+                clearTimeout(t);
+                clearTimeout(registrationTimer);
+                console.log(`[${port}] WS ERROR:`, e.message);
+                resolve('error');
+              });
+
+              ws.on('close', (code) => console.log(`[${port}] WS CLOSE code:`, code));
+            });
+          }
+
+          (async () => {
+            for (const p of ports) {
+              const result = await testPort(p);
+              console.log(`Puerto ${p}: resultado = ${result}`);
+              if (result === 'connected') {
+                console.log('\n✓ CONEXION IRC EXITOSA');
+                break;
+              }
+            }
+          })();
           NODEEOF
+
       - name: Start IRC Hispano server
         run: PORT=3000 RENDER=true node server.js &
+
       - name: Wait for server ready
         run: |
           for i in $(seq 1 15); do
@@ -55,11 +135,13 @@ jobs:
             echo "Waiting ($i/15)..."
             sleep 2
           done
+
       - name: Install cloudflared
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -o /usr/local/bin/cloudflared
           chmod +x /usr/local/bin/cloudflared
+
       - name: Start tunnel and write URL to repo
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,6 +173,7 @@ jobs:
           echo "========================================"
           echo "  SERVIDOR ACTIVO EN: $URL"
           echo "========================================"
+
       - name: Keep alive (2h)
         run: |
           echo "Servidor corriendo. Se detendra en 2 horas."
