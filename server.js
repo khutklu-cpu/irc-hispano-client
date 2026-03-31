@@ -368,6 +368,17 @@ function sanitizeText(t, maxLen = 450) {
   return String(t).replace(/[\r\n\x00]/g, '').slice(0, maxLen);
 }
 
+/* ─── Protección anti-crash ─── */
+
+process.on('uncaughtException', (err) => {
+  console.error('[CRASH] uncaughtException:', err.message, err.stack);
+  // No terminamos el proceso — el servidor sigue vivo
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[CRASH] unhandledRejection:', reason);
+});
+
 /* ─── Apagado limpio ─── */
 
 process.on('SIGINT', () => {
