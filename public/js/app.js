@@ -18,7 +18,7 @@ const state = {
 
 window.addEventListener('DOMContentLoaded', () => {
   // Generar nick de vista previa
-  const previewNick = 'Invitado' + (Math.floor(Math.random() * 9000) + 1000);
+  const ANIMALS=['Leon','Tigre','Caracol','Perro','Pez','Pajaro','Lince','Elefante','Tiburon','Mapache','Murcielago','Topo','Bufalo','Buho','Cocodrilo','Flamenco','Oso','Lobo','Pinguino','Raton','Delfin','Pantera','Rana','Ardilla','Aguila','Hormiga'];const SEPS=['-','_','{','}',''];const ADJS=['Verde','Azul','Naranja','Fugaz','Veloz','Feroz','Paciente','Elocuente','Tenaz','Fuerte','Humilde','Agil','Torpe','Eficiente','Suave','Feliz','Brillante','Sensible'];const previewNick=ANIMALS[Math.floor(Math.random()*ANIMALS.length)]+SEPS[Math.floor(Math.random()*SEPS.length)]+ADJS[Math.floor(Math.random()*ADJS.length)];
   byId('preview-nick').textContent = previewNick;
 
   // Crear ventana de status
@@ -142,7 +142,7 @@ function handleServerMsg(msg) {
       byId('main-screen').classList.remove('hidden');
       byId('tb-nick').textContent = msg.nick;
       setStatus('Conectado como ' + msg.nick);
-      addSystemMsg('*status*', `Conectado a irc.irc-hispano.org como ${msg.nick}`);
+      addSystemMsg('*status*', `Conectado a ChatHispano como ${msg.nick}`);
       // Unirse a canales pendientes
       for (const ch of (state.pendingChannels || [])) {
         send({ type: 'JOIN', channel: ch });
