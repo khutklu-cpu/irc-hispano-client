@@ -259,7 +259,7 @@ wss.on('connection', (ws, req) => {
         });
 
         // Conectar
-        send('STATUS', { message: 'Conectando a irc.irc-hispano.org...' });
+        send('STATUS', { message: 'Conectando via proxy ChatHispano...' });
         irc.connect().catch(e => {
           send('ERROR', { message: `Error de conexión: ${e.message}` });
         });
