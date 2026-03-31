@@ -15,6 +15,37 @@ jobs:
           node-version: '22'
       - name: Install dependencies
         run: npm install --production
+      - name: Test WebSocket connectivity to KiwiIRC proxy
+        run: |
+          echo "=== Proxy env vars ==="
+          echo "HTTP_PROXY: ${HTTP_PROXY:-none}"
+          echo "HTTPS_PROXY: ${HTTPS_PROXY:-none}"
+          echo "http_proxy: ${http_proxy:-none}"
+          echo "https_proxy: ${https_proxy:-none}"
+          echo "=== DNS check ==="
+          host kiwi.chathispano.com || true
+          echo "=== Port 9000 reachable? ==="
+          timeout 5 bash -c 'cat < /dev/null > /dev/tcp/kiwi.chathispano.com/9000' && echo "PORT 9000 OPEN" || echo "PORT 9000 BLOCKED"
+          echo "=== SockJS info ==="
+          curl -s "https://kiwi.chathispano.com:9000/webirc/kiwiirc/info"
+          echo ""
+          echo "=== Node WS test ==="
+          node - << 'NODEEOF'
+          const { WebSocket } = require('ws');
+          const crypto = require('crypto');
+          const srv = String(Math.floor(Math.random()*900)+100);
+          const session = crypto.randomBytes(8).toString('hex');
+          const url = `wss://kiwi.chathispano.com:9000/webirc/kiwiirc/${srv}/${session}/websocket`;
+          console.log('URL:', url);
+          const ws = new WebSocket(url, {
+            headers: { 'Origin': 'https://chathispano.com' },
+            rejectUnauthorized: false
+          });
+          ws.on('open', () => console.log('WS OPEN - waiting for SockJS o frame'));
+          ws.on('message', d => { console.log('FRAME:', d.toString()); ws.close(); process.exit(0); });
+          ws.on('error', e => { console.log('ERROR:', e.message); process.exit(1); });
+          setTimeout(() => { console.log('TIMEOUT 10s'); process.exit(2); }, 10000);
+          NODEEOF
       - name: Start IRC Hispano server
         run: PORT=3000 RENDER=true node server.js &
       - name: Wait for server ready
@@ -34,7 +65,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cloudflared tunnel --url http://localhost:3000 --no-autoupdate > /tmp/cf.log 2>&1 &
-          
+
           echo "Waiting for Cloudflare URL..."
           URL=""
           for i in $(seq 1 40); do
@@ -42,22 +73,21 @@ jobs:
             [ -n "$URL" ] && break
             sleep 3
           done
-          
+
           if [ -z "$URL" ]; then
             cat /tmp/cf.log
             exit 1
           fi
-          
+
           echo "URL: $URL"
-          
-          # Escribir URL en el repo via git push
+
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           echo "$URL" > LIVE_URL.txt
           git add LIVE_URL.txt
           git commit -m "ci: URL activa del servidor = $URL"
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" main
-          
+
           echo "========================================"
           echo "  SERVIDOR ACTIVO EN: $URL"
           echo "========================================"
