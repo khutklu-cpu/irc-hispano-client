@@ -341,57 +341,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-
-/* ─── Diagnóstico de conectividad ─── */
-app.get('/diag', async (req, res) => {
-  const net = require('net');
-  const tls = require('tls');
-  const tcp = (h, p, ssl) => new Promise(r => {
-    const t = setTimeout(() => r({ ok: false, e: 'timeout' }), 6000);
-    try {
-      const s = ssl ? tls.connect(p, h, { rejectUnauthorized: false }) : net.connect(p, h);
-      s.once('connect', () => { clearTimeout(t); s.destroy(); r({ ok: true }); });
-      s.once('error', e => { clearTimeout(t); r({ ok: false, e: e.message }); });
-    } catch(e) { clearTimeout(t); r({ ok: false, e: e.message }); }
-  });
-  const [a, b, c] = await Promise.all([
-    tcp('irc.irc-hispano.org', 6667, false),
-    tcp('irc.irc-hispano.org', 6697, true),
-    tcp('kiwi.chathispano.com', 9000, false),
-  ]);
-  res.json({ 'irc-6667': a, 'irc-6697ssl': b, 'kiwi-9000': c });
-});
-
-app.get('/test-irc', async (req, res) => {
-  const tls = require('tls');
-  const lines = [];
-  const crlf = String.fromCharCode(13) + String.fromCharCode(10);
-  await new Promise(resolve => {
-    const t = setTimeout(() => resolve(), 12000);
-    const nick = 'Diag' + (Date.now() % 9999);
-    try {
-      const s = tls.connect(6697, 'irc.irc-hispano.org', { rejectUnauthorized: false }, () => {
-        s.write('NICK ' + nick + crlf);
-        s.write('USER diag 0 * :Test' + crlf);
-      });
-      let buf = '';
-      s.on('data', d => {
-        buf += d.toString();
-        const ls = buf.split(crlf);
-        buf = ls.pop();
-        for (const l of ls) {
-          lines.push(l);
-          if (lines.length >= 25 || /^ERROR|001 Diag/.test(l)) {
-            clearTimeout(t); s.destroy(); resolve();
-          }
-        }
-      });
-      s.on('error', e => { lines.push('ERR: ' + e.message); clearTimeout(t); resolve(); });
-    } catch(e) { lines.push('CATCH: ' + e.message); resolve(); }
-  });
-  res.json({ lines });
-});
-
+require("./diag-routes")(app);
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
