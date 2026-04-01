@@ -62,37 +62,34 @@ function doConnect() {
   byId('btn-connect').disabled = true;
   setConnectStatus('Conectando...', false);
 
-  // Reutilizar WebSocket existente si ya está abierto
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({ type: 'CONNECT', proxy }));
+  // Reutilizar socket si ya está conectado
+  if (state.ws && state.ws.connected) {
+    state.ws.emit('msg', { type: 'CONNECT', proxy });
     state.pendingChannels = channels;
     return;
   }
 
-  // Cerrar WebSocket anterior si existe
+  // Desconectar socket anterior si existe
   if (state.ws) {
-    state.ws.onclose = null; // evitar handler obsoleto
-    state.ws.close();
+    state.ws.disconnect();
     state.ws = null;
   }
 
-  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${wsProto}//${location.host}/ws`);
-  state.ws = ws;
+  // Socket.IO: polling primero (funciona con proxies corporativos), luego upgrade a WS
+  const socket = io({ transports: ['polling', 'websocket'] });
+  state.ws = socket;
 
-  ws.addEventListener('open', () => {
-    ws.send(JSON.stringify({ type: 'CONNECT', proxy }));
+  socket.on('connect', () => {
+    socket.emit('msg', { type: 'CONNECT', proxy });
     state.pendingChannels = channels;
   });
 
-  ws.addEventListener('message', e => {
-    let msg;
-    try { msg = JSON.parse(e.data); } catch { return; }
+  socket.on('msg', msg => {
     handleServerMsg(msg);
   });
 
-  ws.addEventListener('close', () => {
-    if (state.ws === ws) {
+  socket.on('disconnect', () => {
+    if (state.ws === socket) {
       setStatus('Desconectado');
       byId('sb-status').textContent = 'Desconectado';
       byId('btn-connect').disabled = false;
@@ -100,15 +97,15 @@ function doConnect() {
     }
   });
 
-  ws.addEventListener('error', () => {
-    setConnectStatus('Error de WebSocket', true);
+  socket.on('connect_error', () => {
+    setConnectStatus('Error de conexión', true);
     byId('btn-connect').disabled = false;
   });
 }
 
 function doDisconnect() {
   send({ type: 'DISCONNECT' });
-  state.ws?.close();
+  state.ws?.disconnect();
   state.ws = null;
   byId('main-screen').classList.add('hidden');
   byId('connect-screen').classList.remove('hidden');
@@ -175,7 +172,7 @@ function handleServerMsg(msg) {
       addSystemMsg('*status*', 'Configura un proxy SOCKS5 o VPN en la pantalla de conexión y vuelve a intentarlo.');
       byId('btn-connect').disabled = false;
       // Cerrar WebSocket actual para que el próximo intento arranque limpio
-      if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
+      if (state.ws) { state.ws.disconnect(); state.ws = null; }
       // Volver a pantalla de conexión
       setTimeout(() => {
         byId('main-screen').classList.add('hidden');
@@ -972,8 +969,8 @@ function markMention(winId) {
 }
 
 function send(obj) {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify(obj));
+  if (state.ws && state.ws.connected) {
+    state.ws.emit('msg', obj);
   }
 }
 
