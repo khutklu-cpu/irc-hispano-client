@@ -1,12 +1,12 @@
 'use strict';
 /**
  * Servidor principal — IRC Hispano Web Client
- * Express + WebSocket + IRC bridge
+ * Express + Socket.IO + IRC bridge
  */
 
 const express  = require('express');
 const http     = require('http');
-const { WebSocketServer, WebSocket } = require('ws');
+const { Server: SocketIO } = require('socket.io');
 const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs');
@@ -121,32 +121,28 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Error interno' });
 });
 
-/* ─── HTTP server + WebSocket ─── */
+/* ─── HTTP server + Socket.IO ─── */
 
 const server = http.createServer(app);
-const wss    = new WebSocketServer({ server, path: '/ws' });
+const io     = new SocketIO(server);
 
-// Mapa de sesiones WS → IRCClient
+// Mapa de sesiones socket → IRCClient
 const sessions = new Map();
 
-wss.on('connection', (ws, req) => {
-  // IP del cliente (solo local)
-  const clientIp = req.socket.remoteAddress;
-  console.log(`[WS] Nueva conexión desde ${clientIp}`);
+io.on('connection', socket => {
+  const clientIp = socket.handshake.address;
+  console.log(`[WS] Nueva conexion desde ${clientIp}`);
 
   let irc = null;
 
   /* ── Enviar evento al browser ── */
   const send = (type, payload) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type, ...payload }));
-    }
+    socket.emit('msg', { type, ...payload });
   };
 
   /* ── Recibir mensajes del browser ── */
-  ws.on('message', async raw => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
+  socket.on('msg', async msg => {
+    if (!msg || typeof msg !== 'object') return;
 
     switch (msg.type) {
 
@@ -167,7 +163,7 @@ wss.on('connection', (ws, req) => {
         } : null;
 
         irc = new IRCClient({ proxy });
-        sessions.set(ws, irc);
+        sessions.set(socket, irc);
 
         // ── Eventos IRC → Browser ──
 
@@ -261,7 +257,7 @@ wss.on('connection', (ws, req) => {
         // Conectar
         send('STATUS', { message: 'Conectando via proxy ChatHispano...' });
         irc.connect().catch(e => {
-          send('ERROR', { message: `Error de conexión: ${e.message}` });
+          send('ERROR', { message: `Error de conexion: ${e.message}` });
         });
         break;
       }
@@ -329,19 +325,18 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  /* ── Desconexión WS ── */
-  ws.on('close', () => {
-    console.log(`[WS] Conexión cerrada desde ${clientIp}`);
-    const irc = sessions.get(ws);
-    if (irc) { irc.destroy(); sessions.delete(ws); }
+  /* ── Desconexion socket ── */
+  socket.on('disconnect', () => {
+    console.log(`[WS] Conexion cerrada desde ${clientIp}`);
+    const irc = sessions.get(socket);
+    if (irc) { irc.destroy(); sessions.delete(socket); }
   });
 
-  ws.on('error', err => {
+  socket.on('error', err => {
     console.error('[WS] Error:', err.message);
   });
 });
 
-require("./diag-routes")(app, server);
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
@@ -369,7 +364,7 @@ function sanitizeText(t, maxLen = 450) {
   return String(t).replace(/[\r\n\x00]/g, '').slice(0, maxLen);
 }
 
-/* ─── Protección anti-crash ─── */
+/* ─── Proteccion anti-crash ─── */
 
 process.on('uncaughtException', (err) => {
   console.error('[CRASH] uncaughtException:', err.message, err.stack);
@@ -384,9 +379,9 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('SIGINT', () => {
   console.log('\nApagando servidor...');
-  for (const [ws, irc] of sessions) {
+  for (const [socket, irc] of sessions) {
     irc.quit('Servidor reiniciando');
-    ws.close();
+    socket.disconnect(true);
   }
   server.close(() => process.exit(0));
 });
