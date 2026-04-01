@@ -341,7 +341,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-require("./diag-routes")(app);
+require("./diag-routes")(app, server);
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
