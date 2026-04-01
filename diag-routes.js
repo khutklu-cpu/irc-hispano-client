@@ -1,7 +1,8 @@
 'use strict';
-module.exports = function(app) {
+module.exports = function(app, server) {
   const net = require('net');
   const tls = require('tls');
+  const { WebSocket } = require('ws');
 
   app.get('/diag', async (req, res) => {
     const tcp = (h, p, ssl) => new Promise(r => {
@@ -20,6 +21,7 @@ module.exports = function(app) {
     res.json({ 'irc-6667': a, 'irc-6697ssl': b, 'kiwi-9000': c });
   });
 
+  // Test IRC directo con PONG
   app.get('/test-irc', async (req, res) => {
     const CRLF = Buffer.from([13, 10]);
     const lines = [];
@@ -53,34 +55,44 @@ module.exports = function(app) {
     res.json({ lines });
   });
 
-  // Test el flujo EXACTO de la app (usa el mismo IRCClient)
+  // Test IRCClient directo (mismo codigo que la app)
   app.get('/test-app', async (req, res) => {
     const { IRCClient } = require('./lib/irc');
     const result = await new Promise(resolve => {
       const t = setTimeout(() => resolve({ error: 'timeout 25s' }), 25000);
       const irc = new IRCClient({});
+      irc.on('connected', nick => { clearTimeout(t); irc.quit('test'); resolve({ ok: true, nick }); });
+      irc.on('error', msg => { clearTimeout(t); irc.destroy(); resolve({ error: msg }); });
+      irc.on('banned', msg => { clearTimeout(t); irc.destroy(); resolve({ banned: true, msg }); });
+      irc.connect().catch(e => { clearTimeout(t); resolve({ connectError: e.message }); });
+    });
+    res.json(result);
+  });
 
-      irc.on('connected', nick => {
-        clearTimeout(t);
-        irc.quit('test');
-        resolve({ ok: true, nick, msg: 'Conectado correctamente' });
-      });
-      irc.on('error', msg => {
-        clearTimeout(t);
-        irc.destroy();
-        resolve({ error: msg });
-      });
-      irc.on('banned', msg => {
-        clearTimeout(t);
-        irc.destroy();
-        resolve({ banned: true, msg });
-      });
-      irc.on('status', msg => console.log('[test-app status]', msg));
-
-      irc.connect().catch(e => {
-        clearTimeout(t);
-        resolve({ error: 'connect() threw: ' + e.message });
-      });
+  // Test COMPLETO: WebSocket cliente → servidor → IRC (simula exactamente el browser)
+  app.get('/test-full', async (req, res) => {
+    const port = server.address().port;
+    const events = [];
+    const result = await new Promise(resolve => {
+      const t = setTimeout(() => resolve({ events, error: 'timeout 25s' }), 25000);
+      try {
+        const ws = new WebSocket('ws://localhost:' + port + '/ws');
+        ws.on('open', () => {
+          events.push('WS_OPEN');
+          ws.send(JSON.stringify({ type: 'CONNECT', proxy: null }));
+        });
+        ws.on('message', data => {
+          const msg = JSON.parse(data.toString());
+          events.push({ type: msg.type, nick: msg.nick, message: msg.message });
+          if (msg.type === 'CONNECTED' || msg.type === 'ERROR' || msg.type === 'BANNED' || events.length > 15) {
+            clearTimeout(t);
+            ws.close();
+            resolve({ events });
+          }
+        });
+        ws.on('error', e => { clearTimeout(t); resolve({ events, wsError: e.message }); });
+        ws.on('close', () => events.push('WS_CLOSE'));
+      } catch(e) { clearTimeout(t); resolve({ events, catchError: e.message }); }
     });
     res.json(result);
   });
