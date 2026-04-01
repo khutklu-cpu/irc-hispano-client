@@ -386,9 +386,43 @@ app.get('/diag2', async (req, res) => {
   ]);
 
   const ws9000 = await wsTest(`wss://kiwi.chathispano.com:9000/webirc/kiwiirc/${srv}/${session}/websocket`);
-  const ws443  = await wsTest(`wss://kiwi.chathispano.com:443/webirc/kiwiirc/${srv}/${session}/websocket`);
 
-  res.json({ tcp9000, tls9000, tcp443, tls443, ws9000, ws443 });
+  // Full KiwiIRC handshake test
+  const kiwiFullTest = await new Promise(r => {
+    const frames = [];
+    const nick = 'Diag' + (Date.now() % 9999);
+    const t = setTimeout(() => { r({ ok: false, e: 'timeout 20s', frames }); }, 20000);
+    try {
+      const wsUrl = `wss://kiwi.chathispano.com:9000/webirc/kiwiirc/${srv}2/${session}2/websocket`;
+      const ws = new WebSocket(wsUrl, {
+        headers: { 'Origin': 'https://chathispano.com' },
+        rejectUnauthorized: false
+      });
+      let opened = false;
+      ws.once('open', () => { opened = true; frames.push('ws-open'); });
+      ws.on('message', data => {
+        const frame = data.toString();
+        frames.push({ raw: frame.slice(0, 300) });
+        if (frame === 'o') {
+          // Send CONTROL START then register
+          ws.send(JSON.stringify([':irc.irc-hispano.org CONTROL START']));
+          setTimeout(() => {
+            ws.send(JSON.stringify(['CAP LS 302\r\n']));
+            ws.send(JSON.stringify([`NICK ${nick}\r\n`]));
+            ws.send(JSON.stringify(['USER kiwi 0 * :Test\r\n']));
+          }, 200);
+        } else if (frames.length >= 10 || /001|ERROR|G-line|GLINE|banned|Closing/i.test(frame)) {
+          clearTimeout(t);
+          ws.terminate();
+          r({ ok: true, frames });
+        }
+      });
+      ws.once('error', e => { clearTimeout(t); ws.terminate(); r({ ok: false, e: e.message, frames }); });
+      ws.once('close', code => { clearTimeout(t); r({ ok: false, e: 'closed ' + code, frames }); });
+    } catch(e) { clearTimeout(t); r({ ok: false, e: e.message, frames }); }
+  });
+
+  res.json({ tcp9000, tls9000, tcp443, tls443, ws9000, kiwiFullTest });
 });
 
 /* ─── Iniciar servidor ─── */
