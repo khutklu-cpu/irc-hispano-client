@@ -379,6 +379,34 @@ app.get('/diag', async (req, res) => {
   });
 });
 
+
+app.get('/test-irc', async (req, res) => {
+  const tls = require('tls');
+  const lines = [];
+  await new Promise(resolve => {
+    const t = setTimeout(() => resolve(), 10000);
+    const s = tls.connect(6697, 'irc.irc-hispano.org', { rejectUnauthorized: false }, () => {
+      s.write('NICK DiagBot_Test
+USER diag 0 * :Test
+');
+    });
+    let buf = '';
+    s.on('data', d => {
+      buf += d.toString();
+      const ls = buf.split('
+');
+      buf = ls.pop();
+      for (const l of ls) {
+        lines.push(l);
+        if (lines.length >= 15 || /^ERROR|001 DiagBot/.test(l)) {
+          clearTimeout(t); s.destroy(); resolve();
+        }
+      }
+    });
+    s.on('error', e => { lines.push('ERROR: ' + e.message); clearTimeout(t); resolve(); });
+  });
+  res.json({ lines });
+});
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
