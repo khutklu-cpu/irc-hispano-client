@@ -341,6 +341,44 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+
+/* ─── Diagnóstico de conectividad ─── */
+app.get('/diag', async (req, res) => {
+  const net = require('net');
+  const tls = require('tls');
+  const { WebSocket } = require('ws');
+  const testTCP = (host, port, ssl) => new Promise(resolve => {
+    const t = setTimeout(() => resolve({ ok: false, err: 'timeout' }), 6000);
+    try {
+      const s = ssl ? tls.connect(port, host, { rejectUnauthorized: false }) : net.connect(port, host);
+      s.once('connect', () => { clearTimeout(t); s.destroy(); resolve({ ok: true }); });
+      s.once('error', e => { clearTimeout(t); resolve({ ok: false, err: e.message }); });
+    } catch(e) { clearTimeout(t); resolve({ ok: false, err: e.message }); }
+  });
+  const testWS = (url) => new Promise(resolve => {
+    const t = setTimeout(() => resolve({ ok: false, err: 'timeout' }), 8000);
+    try {
+      const ws = new WebSocket(url, { rejectUnauthorized: false });
+      ws.once('open', () => { clearTimeout(t); ws.terminate(); resolve({ ok: true }); });
+      ws.once('error', e => { clearTimeout(t); resolve({ ok: false, err: e.message }); });
+    } catch(e) { clearTimeout(t); resolve({ ok: false, err: e.message }); }
+  });
+  const [r1,r2,r3,r4,r5,r6,r7] = await Promise.all([
+    testTCP('irc.irc-hispano.org', 6667, false),
+    testTCP('irc.irc-hispano.org', 6697, true),
+    testTCP('irc.irc-hispano.org', 7000, false),
+    testTCP('kiwi.chathispano.com', 9000, false),
+    testWS('wss://kiwi.chathispano.com:9000/webirc/kiwiirc/000/test/websocket'),
+    testTCP('irc.libera.chat', 6667, false),
+    testTCP('irc.libera.chat', 6697, true),
+  ]);
+  res.json({
+    'irc-hispano-6667': r1, 'irc-hispano-6697ssl': r2, 'irc-hispano-7000': r3,
+    'kiwi-chathispano-9000-tcp': r4, 'kiwi-chathispano-9000-ws': r5,
+    'libera-6667': r6, 'libera-6697ssl': r7,
+  });
+});
+
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
