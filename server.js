@@ -337,6 +337,60 @@ io.on('connection', socket => {
   });
 });
 
+/* ─── Diagnóstico de red ─── */
+
+app.get('/diag2', async (req, res) => {
+  const net    = require('net');
+  const tls    = require('tls');
+  const crypto = require('crypto');
+  const { WebSocket } = require('ws');
+
+  const tcpTest = (host, port, ssl) => new Promise(r => {
+    const t = setTimeout(() => r({ ok: false, e: 'timeout' }), 6000);
+    try {
+      const s = ssl ? tls.connect(port, host, { rejectUnauthorized: false }) : net.connect(port, host);
+      s.once(ssl ? 'secureConnect' : 'connect', () => { clearTimeout(t); s.destroy(); r({ ok: true }); });
+      s.once('error', e => { clearTimeout(t); r({ ok: false, e: e.message }); });
+    } catch(e) { clearTimeout(t); r({ ok: false, e: e.message }); }
+  });
+
+  const wsTest = (url) => new Promise(r => {
+    const events = [];
+    const t = setTimeout(() => { r({ ok: false, e: 'timeout 10s', events }); }, 10000);
+    try {
+      const ws = new WebSocket(url, {
+        headers: { 'Origin': 'https://chathispano.com' },
+        rejectUnauthorized: false
+      });
+      ws.once('open', () => { events.push('open'); });
+      ws.on('message', data => {
+        const frame = data.toString().slice(0, 200);
+        events.push({ frame });
+        clearTimeout(t);
+        ws.terminate();
+        r({ ok: true, events });
+      });
+      ws.once('error', e => { clearTimeout(t); ws.terminate(); r({ ok: false, e: e.message, events }); });
+      ws.once('close', code => { clearTimeout(t); r({ ok: false, e: 'closed ' + code, events }); });
+    } catch(e) { clearTimeout(t); r({ ok: false, e: e.message, events }); }
+  });
+
+  const srv = String(Math.floor(Math.random() * 900) + 100);
+  const session = crypto.randomBytes(8).toString('hex');
+
+  const [tcp9000, tls9000, tcp443, tls443] = await Promise.all([
+    tcpTest('kiwi.chathispano.com', 9000, false),
+    tcpTest('kiwi.chathispano.com', 9000, true),
+    tcpTest('kiwi.chathispano.com', 443, false),
+    tcpTest('kiwi.chathispano.com', 443, true),
+  ]);
+
+  const ws9000 = await wsTest(`wss://kiwi.chathispano.com:9000/webirc/kiwiirc/${srv}/${session}/websocket`);
+  const ws443  = await wsTest(`wss://kiwi.chathispano.com:443/webirc/kiwiirc/${srv}/${session}/websocket`);
+
+  res.json({ tcp9000, tls9000, tcp443, tls443, ws9000, ws443 });
+});
+
 /* ─── Iniciar servidor ─── */
 
 const PORT = process.env.PORT || 3000;
