@@ -52,4 +52,36 @@ module.exports = function(app) {
     });
     res.json({ lines });
   });
+
+  // Test el flujo EXACTO de la app (usa el mismo IRCClient)
+  app.get('/test-app', async (req, res) => {
+    const { IRCClient } = require('./lib/irc');
+    const result = await new Promise(resolve => {
+      const t = setTimeout(() => resolve({ error: 'timeout 25s' }), 25000);
+      const irc = new IRCClient({});
+
+      irc.on('connected', nick => {
+        clearTimeout(t);
+        irc.quit('test');
+        resolve({ ok: true, nick, msg: 'Conectado correctamente' });
+      });
+      irc.on('error', msg => {
+        clearTimeout(t);
+        irc.destroy();
+        resolve({ error: msg });
+      });
+      irc.on('banned', msg => {
+        clearTimeout(t);
+        irc.destroy();
+        resolve({ banned: true, msg });
+      });
+      irc.on('status', msg => console.log('[test-app status]', msg));
+
+      irc.connect().catch(e => {
+        clearTimeout(t);
+        resolve({ error: 'connect() threw: ' + e.message });
+      });
+    });
+    res.json(result);
+  });
 };
