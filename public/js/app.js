@@ -141,9 +141,9 @@ function handleServerMsg(msg) {
       setStatus('Conectado como ' + msg.nick);
       addSystemMsg('*status*', `Conectado a ChatHispano como ${msg.nick}`);
       // Unirse a canales pendientes
-      for (const ch of (state.pendingChannels || [])) {
-        send({ type: 'JOIN', channel: ch });
-      }
+      (state.pendingChannels || []).forEach((ch, idx) => {
+        setTimeout(() => send({ type: 'JOIN', channel: ch }), idx * 700);
+      });
       state.pendingChannels = [];
       break;
 
@@ -613,10 +613,11 @@ function processCommand(raw) {
       break;
 
     case 'NICK':
-      if (args[0]) { send({ type: 'MODE', target: `NICK ${args[0]}`, mode: '' }); }
-      // Los servidores IRC no usan MODE para cambiar nick, se hace con NICK command
-      // Pero nuestro server.js no tiene caso NICK directo, lo manejamos con RAW si debug
-      addSystemMsg(state.currentWin, 'El cambio de nick no está disponible en modo invitado');
+      if (args[0]) {
+        send({ type: 'NICK', nick: args[0] });
+      } else {
+        addErrMsg(state.currentWin, 'Uso: /nick NuevoNick');
+      }
       break;
 
     case 'CLEAR':
@@ -652,6 +653,7 @@ function showHelp() {
     '/me texto           — Acción (/me baila)',
     '/topic texto        — Cambiar topic',
     '/kick nick [razón]  — Expulsar usuario',
+    '/nick NuevoNick     — Cambiar nick',
     '/whois nick         — Info de usuario',
     '/clear              — Limpiar ventana',
     '/close              — Cerrar ventana',

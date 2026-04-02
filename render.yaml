@@ -3,11 +3,15 @@ services:
     name: irc-hispano-client
     env: node
     plan: free
-    buildCommand: npm install --production
-    startCommand: node server.js
-    healthCheckPath: /
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
     envVars:
       - key: NODE_ENV
         value: production
-      - key: RENDER
-        value: "true"
+      - key: IRC_HOST
+        value: irc.irc-hispano.org
+      - key: IRC_PLAIN_PORTS
+        value: 6667,6668,6669,7000
+      - key: IRC_SSL_PORTS
+        value: 6697,7070
