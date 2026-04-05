@@ -23,6 +23,33 @@ const APP_HOST = process.env.HOST || '0.0.0.0';
 const APP_PORT = parseInt(process.env.PORT || '3000', 10);
 const IRC_SERVER_LABEL = process.env.IRC_HOST || 'irc.irc-hispano.org';
 
+function parseSocksPool(envValue) {
+  if (!envValue) return [];
+  return String(envValue)
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((item) => {
+      try {
+        const u = new URL(item);
+        if (!/^socks4:|^socks5:/i.test(u.protocol)) return null;
+        const host = u.hostname;
+        const port = parseInt(u.port, 10);
+        if (!host || !(port >= 1 && port <= 65535)) return null;
+        return {
+          host,
+          port,
+          type: /^socks4:/i.test(u.protocol) ? 4 : 5,
+          username: u.username ? decodeURIComponent(u.username).slice(0, 64) : undefined,
+          password: u.password ? decodeURIComponent(u.password).slice(0, 64) : undefined
+        };
+      } catch (_) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
 /* ─── Express ─── */
 
 const app = express();
@@ -158,11 +185,18 @@ io.on('connection', socket => {
       case 'CONNECT': {
         if (irc) { irc.destroy(); }
 
+        const envProxyPool = parseSocksPool(process.env.SOCKS_POOL);
+        const envProxyHostRaw = process.env.SOCKS_HOST ? String(process.env.SOCKS_HOST).slice(0, 253) : '';
+        const envProxyHostValid = /^[a-zA-Z0-9.\-]+$/.test(envProxyHostRaw);
+        const envProxyPort = parseInt(process.env.SOCKS_PORT || '0', 10);
+        const envProxyUser = process.env.SOCKS_USER ? String(process.env.SOCKS_USER).slice(0, 64) : undefined;
+        const envProxyPass = process.env.SOCKS_PASS ? String(process.env.SOCKS_PASS).slice(0, 64) : undefined;
+
         // Validar proxy: solo hostname/IP válido, puerto en rango
         const proxyHostRaw = msg.proxy && msg.proxy.host ? String(msg.proxy.host).slice(0, 253) : '';
         const proxyHostValid = /^[a-zA-Z0-9.\-]+$/.test(proxyHostRaw);
         const proxyPort = parseInt(msg.proxy?.port, 10);
-        const proxy = (proxyHostValid && proxyPort >= 1 && proxyPort <= 65535) ? {
+        const uiProxy = (proxyHostValid && proxyPort >= 1 && proxyPort <= 65535) ? {
           host:     proxyHostRaw,
           port:     proxyPort,
           type:     5,
@@ -170,7 +204,18 @@ io.on('connection', socket => {
           password: msg.proxy.password ? String(msg.proxy.password).slice(0, 64) : undefined
         } : null;
 
-        irc = new IRCClient({ proxy });
+        const envProxy = (envProxyHostValid && envProxyPort >= 1 && envProxyPort <= 65535) ? {
+          host: envProxyHostRaw,
+          port: envProxyPort,
+          type: 5,
+          username: envProxyUser,
+          password: envProxyPass
+        } : null;
+
+        const proxy = uiProxy || envProxy || envProxyPool[0] || null;
+        const proxies = uiProxy ? [uiProxy] : (envProxyPool.length > 0 ? envProxyPool : (envProxy ? [envProxy] : []));
+
+        irc = new IRCClient({ proxy, proxies });
         sessions.set(socket, irc);
 
         // ── Eventos IRC → Browser ──

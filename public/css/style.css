@@ -60,6 +60,14 @@ body { font-family: var(--font); font-size: 13px; background: var(--bg); color: 
 .connect-channels input { width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 12px; font-family: var(--font); font-size: .9em; outline: none; }
 .connect-channels input:focus { border-color: var(--accent); }
 
+.connect-mode { margin-bottom: 14px; }
+.connect-mode label { display: block; color: var(--text-dim); font-size: .82em; margin-bottom: 6px; }
+.connect-mode select {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); padding: 8px 12px; font-family: var(--font); font-size: .88em; outline: none;
+}
+.connect-mode select:focus { border-color: var(--accent); }
+
 .proxy-section { margin-bottom: 20px; }
 .proxy-section summary { color: var(--text-dim); font-size: .82em; cursor: pointer; padding: 6px 0; user-select: none; }
 .proxy-section summary:hover { color: var(--text); }

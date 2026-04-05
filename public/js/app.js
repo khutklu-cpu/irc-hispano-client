@@ -7,12 +7,20 @@
 /* ─── Estado global ─── */
 const state = {
   ws:          null,
+  direct:      null,
+  connMode:    'browser',
   nick:        '',
   currentWin:  '*status*',
   windows:     {},      // id → { type, title, messages, nicks, unread, mentions }
   histIdx:     -1,
   history:     []       // historial de comandos
 };
+
+const KIWI_HOST = 'kiwi.chathispano.com';
+const KIWI_PORTS = [9000, 9001, 9002, 9004];
+const KIWI_PATH = '/webirc/kiwiirc/';
+const KIWI_SERVER = `https://${KIWI_HOST}:9000${KIWI_PATH}`;
+const DEFAULT_AUTO_CHANNEL = '#hispano';
 
 /* ─── Inicialización ─── */
 
@@ -32,7 +40,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Botones — reemplazan onclick inline (bloqueados por CSP)
   byId('btn-connect')  .addEventListener('click', doConnect);
-  byId('btn-tor')      ?.addEventListener('click', useTor);
   byId('send-btn')     .addEventListener('click', sendInput);
   byId('file-input')   .addEventListener('change', e => uploadFile(e.target));
   document.querySelector('[data-target="*status*"]') ?.addEventListener('click', () => switchWindow('*status*'));
@@ -41,31 +48,30 @@ window.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.tb-btn')[1]            ?.addEventListener('click', showQueryDialog);
   byId('modal-overlay')  ?.addEventListener('click', closeModal);
   byId('modal-box')      ?.addEventListener('click', e => e.stopPropagation());
+
+  setTimeout(() => doConnect(), 80);
 });
 
 /* ─── Conexión ─── */
 
 function doConnect() {
-  const proxyHost = byId('proxy-host').value.trim();
-  const proxyPort = parseInt(byId('proxy-port').value, 10) || 0;
-  const proxyUser = byId('proxy-user').value.trim();
-  const proxyPass = byId('proxy-pass').value.trim();
-
-  const proxy = proxyHost ? {
-    host: proxyHost, port: proxyPort || 1080,
-    username: proxyUser || undefined, password: proxyPass || undefined
-  } : null;
-
-  const channels = byId('input-channels').value.trim()
-    .split(',').map(c => c.trim()).filter(c => c.startsWith('#'));
+  state.connMode = 'browser';
+  const channels = [DEFAULT_AUTO_CHANNEL];
 
   byId('btn-connect').disabled = true;
   setConnectStatus('Conectando...', false);
 
+  state.pendingChannels = channels;
+  connectDirectBrowser();
+}
+
+function connectViaBackend(proxy) {
+  state.connMode = 'backend';
+  disconnectDirect();
+
   // Reutilizar socket si ya está conectado
   if (state.ws && state.ws.connected) {
     state.ws.emit('msg', { type: 'CONNECT', proxy });
-    state.pendingChannels = channels;
     return;
   }
 
@@ -81,7 +87,6 @@ function doConnect() {
 
   socket.on('connect', () => {
     socket.emit('msg', { type: 'CONNECT', proxy });
-    state.pendingChannels = channels;
   });
 
   socket.on('msg', msg => {
@@ -103,10 +108,261 @@ function doConnect() {
   });
 }
 
+function connectDirectBrowser() {
+  state.connMode = 'browser';
+  if (state.ws) {
+    try { state.ws.disconnect(); } catch (_) {}
+    state.ws = null;
+  }
+  disconnectDirect();
+
+  const nick = byId('preview-nick').textContent || randomGuestNick();
+  const direct = {
+    ws: null,
+    nick,
+    connected: false,
+    buffer: '',
+    queue: [],
+    lastSent: 0,
+    msgDelay: 220,
+    pingTimer: null,
+    desiredChannels: new Set(state.pendingChannels || [])
+  };
+  state.direct = direct;
+
+  setConnectStatus('Conectando directo desde navegador...', false);
+  tryDirectPort(0);
+}
+
+function tryDirectPort(idx) {
+  if (!state.direct) return;
+  if (idx >= KIWI_PORTS.length) {
+    setConnectStatus('No se pudo registrar IRC en modo directo', true);
+    byId('btn-connect').disabled = false;
+    addErrMsg('*status*', 'No se pudo registrar IRC en modo directo. Reintenta en unos segundos.');
+    return;
+  }
+
+  const port = KIWI_PORTS[idx];
+  const url = kiwiUrl(port);
+  addSystemMsg('*status*', `Conectando directo a ${KIWI_HOST}:${port}...`);
+
+  let registered = false;
+  const ws = new WebSocket(url);
+  state.direct.ws = ws;
+
+  const watchdog = setTimeout(() => {
+    if (!registered && ws.readyState === WebSocket.OPEN) {
+      try { ws.close(); } catch (_) {}
+    }
+  }, 14000);
+
+  ws.addEventListener('open', () => {
+    setConnectStatus(`WebSocket abierto en puerto ${port}`, false);
+  });
+
+  ws.addEventListener('message', (ev) => {
+    const frame = typeof ev.data === 'string' ? ev.data : String(ev.data);
+    if (frame === 'o') {
+      ws.send(JSON.stringify([`:${KIWI_SERVER} CONTROL START`]));
+      setTimeout(() => {
+        directRaw('CAP LS 302');
+        directRaw(`NICK ${state.direct.nick}`);
+        directRaw('USER kiwi 0 * :Usuario Kiwi ChatHispano');
+      }, 120);
+      return;
+    }
+    directHandleSockJsFrame(frame);
+  });
+
+  ws.addEventListener('error', () => {
+    clearTimeout(watchdog);
+  });
+
+  ws.addEventListener('close', () => {
+    clearTimeout(watchdog);
+    if (!state.direct || state.direct.connected) return;
+    setTimeout(() => tryDirectPort(idx + 1), 200);
+  });
+
+  const onConnected = () => {
+    registered = true;
+    clearTimeout(watchdog);
+    state.direct.connected = true;
+    handleServerMsg({ type: 'CONNECTED', nick: state.direct.nick });
+    (state.pendingChannels || []).forEach((ch, n) => {
+      setTimeout(() => send({ type: 'JOIN', channel: ch }), n * 700);
+    });
+    state.pendingChannels = [];
+  };
+
+  state.direct._onConnected = onConnected;
+}
+
+function directHandleSockJsFrame(frame) {
+  if (!state.direct) return;
+  if (frame === 'h') return;
+  if (frame.startsWith('a')) {
+    let msgs = [];
+    try { msgs = JSON.parse(frame.slice(1)); } catch (_) { return; }
+    for (const msg of msgs) {
+      const lines = (state.direct.buffer + msg).split('\r\n');
+      state.direct.buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (line) directParseLine(line);
+      }
+    }
+    return;
+  }
+  if (frame.startsWith('c')) {
+    handleServerMsg({ type: 'DISCONNECTED' });
+  }
+}
+
+function directParseLine(line) {
+  if (!state.direct) return;
+  if (line.startsWith('PING ')) {
+    directRaw('PONG ' + line.slice(5));
+    return;
+  }
+
+  const m = line.match(/^(?::([^ ]+) )?([A-Z0-9]+)(?: (.+))?$/);
+  if (!m) return;
+  const prefix = m[1] || '';
+  const command = m[2];
+  const rest = m[3] || '';
+  let params = [];
+  let trailing = '';
+  const trailIdx = rest.indexOf(' :');
+  if (trailIdx >= 0) {
+    params = rest.slice(0, trailIdx).split(' ').filter(Boolean);
+    trailing = rest.slice(trailIdx + 2);
+  } else if (rest.startsWith(':')) {
+    trailing = rest.slice(1);
+  } else {
+    params = rest.split(' ').filter(Boolean);
+  }
+
+  const nick = prefix.split('!')[0] || '';
+
+  switch (command) {
+    case '001':
+      state.direct.nick = params[0] || state.direct.nick;
+      state.direct.connected = true;
+      if (typeof state.direct._onConnected === 'function') state.direct._onConnected();
+      startDirectPing();
+      break;
+    case 'PRIVMSG': {
+      const target = params[0];
+      const isPriv = target === state.direct.nick;
+      handleServerMsg({
+        type: 'MESSAGE',
+        from: nick,
+        target: isPriv ? nick : target,
+        text: trailing,
+        private: isPriv,
+        notice: false
+      });
+      break;
+    }
+    case 'NOTICE':
+      handleServerMsg({ type: 'NOTICE', from: nick, target: params[0], text: trailing });
+      break;
+    case 'JOIN':
+      handleServerMsg({ type: 'JOIN', nick, channel: trailing || params[0], self: nick === state.direct.nick });
+      break;
+    case 'PART':
+      handleServerMsg({ type: 'PART', nick, channel: params[0], message: trailing, self: nick === state.direct.nick });
+      break;
+    case 'NICK':
+      handleServerMsg({ type: 'NICK_CHANGE', old: nick, new: trailing || params[0] });
+      break;
+    case 'TOPIC':
+      handleServerMsg({ type: 'TOPIC', nick, channel: params[0], topic: trailing });
+      break;
+    case '353':
+      handleServerMsg({ type: 'NAMES', channel: params[2], nicks: (trailing || '').split(' ').filter(Boolean) });
+      break;
+    case '366':
+      handleServerMsg({ type: 'NAMES_END', channel: params[1], nicks: [] });
+      break;
+    case 'ERROR':
+      handleServerMsg({ type: 'ERROR', message: trailing || rest });
+      break;
+    default:
+      break;
+  }
+}
+
+function directRaw(line) {
+  if (!state.direct || !state.direct.ws || state.direct.ws.readyState !== WebSocket.OPEN) return;
+  const sanitized = String(line).replace(/[\r\n\x00]/g, '').slice(0, 510);
+  const now = Date.now();
+  const elapsed = now - state.direct.lastSent;
+  if (elapsed < state.direct.msgDelay) {
+    state.direct.queue.push(sanitized + '\r\n');
+    if (state.direct.queue.length === 1) {
+      setTimeout(processDirectQueue, state.direct.msgDelay - elapsed);
+    }
+    return;
+  }
+  state.direct.ws.send(JSON.stringify([sanitized + '\r\n']));
+  state.direct.lastSent = now;
+}
+
+function processDirectQueue() {
+  if (!state.direct || state.direct.queue.length === 0) return;
+  const msg = state.direct.queue.shift();
+  if (state.direct.ws && state.direct.ws.readyState === WebSocket.OPEN) {
+    state.direct.ws.send(JSON.stringify([msg]));
+    state.direct.lastSent = Date.now();
+  }
+  if (state.direct.queue.length > 0) setTimeout(processDirectQueue, state.direct.msgDelay);
+}
+
+function startDirectPing() {
+  if (!state.direct) return;
+  clearInterval(state.direct.pingTimer);
+  state.direct.pingTimer = setInterval(() => directRaw('PING :irc.chathispano.com'), 90000);
+}
+
+function disconnectDirect() {
+  if (!state.direct) return;
+  clearInterval(state.direct.pingTimer);
+  try { state.direct.ws && state.direct.ws.close(); } catch (_) {}
+  state.direct = null;
+}
+
+function kiwiUrl(port) {
+  const srv = String(Math.floor(Math.random() * 900) + 100);
+  const session = randomHex(16);
+  return `wss://${KIWI_HOST}:${port}${KIWI_PATH}${srv}/${session}/websocket`;
+}
+
+function randomHex(len) {
+  const arr = new Uint8Array(Math.ceil(len / 2));
+  crypto.getRandomValues(arr);
+  return [...arr].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, len);
+}
+
+function randomGuestNick() {
+  const ANIMALS = ['Leon','Tigre','Caracol','Perro','Pez','Pajaro','Lince','Elefante','Tiburon','Mapache','Murcielago','Topo','Bufalo','Buho','Cocodrilo','Flamenco','Oso','Lobo','Pinguino','Raton','Delfin','Pantera','Rana','Ardilla','Aguila','Hormiga'];
+  const SEPS = ['-','_','{','}',''];
+  const ADJS = ['Verde','Azul','Naranja','Fugaz','Veloz','Feroz','Paciente','Elocuente','Tenaz','Fuerte','Humilde','Agil','Torpe','Eficiente','Suave','Feliz','Brillante','Sensible'];
+  return ANIMALS[Math.floor(Math.random() * ANIMALS.length)] +
+    SEPS[Math.floor(Math.random() * SEPS.length)] +
+    ADJS[Math.floor(Math.random() * ADJS.length)];
+}
+
+function updateConnModeUI() {
+  // UI mínima: sin opciones de modo.
+}
+
 function doDisconnect() {
   send({ type: 'DISCONNECT' });
   state.ws?.disconnect();
   state.ws = null;
+  disconnectDirect();
   byId('main-screen').classList.add('hidden');
   byId('connect-screen').classList.remove('hidden');
   byId('btn-connect').disabled = false;
@@ -122,10 +378,7 @@ function doDisconnect() {
 }
 
 function useTor() {
-  byId('proxy-host').value = '127.0.0.1';
-  byId('proxy-port').value = '9050';
-  byId('proxy-user').value = '';
-  byId('proxy-pass').value = '';
+  // UI mínima: sin configuración de proxy en frontend.
 }
 
 /* ─── Mensajes del servidor ─── */
@@ -971,6 +1224,50 @@ function markMention(winId) {
 }
 
 function send(obj) {
+  if (state.connMode === 'browser' && state.direct) {
+    const target = obj.target || obj.channel || '';
+    switch (obj.type) {
+      case 'DISCONNECT':
+        directRaw('QUIT :Bye');
+        disconnectDirect();
+        handleServerMsg({ type: 'DISCONNECTED' });
+        break;
+      case 'JOIN':
+        if (target) directRaw(`JOIN ${target}`);
+        break;
+      case 'PART':
+        if (target) directRaw(`PART ${target}${obj.message ? ' :' + obj.message : ''}`);
+        break;
+      case 'PRIVMSG':
+        if (target && obj.text) directRaw(`PRIVMSG ${target} :${obj.text}`);
+        break;
+      case 'ACTION':
+        if (target && obj.text) directRaw(`PRIVMSG ${target} :\x01ACTION ${obj.text}\x01`);
+        break;
+      case 'TOPIC':
+        if (target) directRaw(obj.topic ? `TOPIC ${target} :${obj.topic}` : `TOPIC ${target}`);
+        break;
+      case 'KICK':
+        if (obj.channel && obj.nick) directRaw(`KICK ${obj.channel} ${obj.nick}${obj.reason ? ' :' + obj.reason : ''}`);
+        break;
+      case 'MODE':
+        if (obj.target && obj.mode) directRaw(`MODE ${obj.target} ${obj.mode}`);
+        break;
+      case 'WHOIS':
+        if (obj.nick) directRaw(`WHOIS ${obj.nick}`);
+        break;
+      case 'WHO':
+        if (obj.channel) directRaw(`WHO ${obj.channel}`);
+        break;
+      case 'NICK':
+        if (obj.nick) directRaw(`NICK ${obj.nick}`);
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
   if (state.ws && state.ws.connected) {
     state.ws.emit('msg', obj);
   }
