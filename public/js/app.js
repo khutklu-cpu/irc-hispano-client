@@ -58,7 +58,8 @@ function doConnect() {
   state.connMode = 'browser';
   const channels = [DEFAULT_AUTO_CHANNEL];
 
-  byId('btn-connect').disabled = true;
+  // UX: permitir reintento manual en cualquier momento.
+  byId('btn-connect').disabled = false;
   setConnectStatus('Conectando...', false);
 
   state.pendingChannels = channels;
