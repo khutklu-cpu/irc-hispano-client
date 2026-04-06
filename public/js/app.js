@@ -40,12 +40,17 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('btn-connect')  .addEventListener('click', doConnect);
   byId('send-btn')     .addEventListener('click', sendInput);
   byId('file-input')   .addEventListener('change', e => uploadFile(e.target));
-  document.querySelector('[data-target="*status*"]') ?.addEventListener('click', () => switchWindow('*status*'));
-  document.querySelector('.tb-btn.danger')           ?.addEventListener('click', doDisconnect);
-  document.querySelectorAll('.tb-btn')[0]            ?.addEventListener('click', showJoinDialog);
-  document.querySelectorAll('.tb-btn')[1]            ?.addEventListener('click', showQueryDialog);
-  byId('modal-overlay')  ?.addEventListener('click', closeModal);
-  byId('modal-box')      ?.addEventListener('click', e => e.stopPropagation());
+  const statusBtn = document.querySelector('[data-target="*status*"]');
+  if (statusBtn) statusBtn.addEventListener('click', () => switchWindow('*status*'));
+  const disconnectBtn = document.querySelector('.tb-btn.danger');
+  if (disconnectBtn) disconnectBtn.addEventListener('click', doDisconnect);
+  const topButtons = document.querySelectorAll('.tb-btn');
+  if (topButtons[0]) topButtons[0].addEventListener('click', showJoinDialog);
+  if (topButtons[1]) topButtons[1].addEventListener('click', showQueryDialog);
+  const modalOverlay = byId('modal-overlay');
+  if (modalOverlay) modalOverlay.addEventListener('click', closeModal);
+  const modalBox = byId('modal-box');
+  if (modalBox) modalBox.addEventListener('click', e => e.stopPropagation());
 
   setTimeout(() => doConnect(), 80);
 });
@@ -494,10 +499,12 @@ function removeWindow(id) {
   if (!w) return;
   delete state.windows[id];
   const dom = byId('win-' + cssId(id));
-  dom?.parentNode?.removeChild(dom);
+  if (dom && dom.parentNode) dom.parentNode.removeChild(dom);
   // Quitar del sidebar
-  byId('chan-list').querySelector(`[data-target="${CSS.escape(id)}"]`)?.remove();
-  byId('priv-list').querySelector(`[data-target="${CSS.escape(id)}"]`)?.remove();
+  const chanItem = byId('chan-list').querySelector(`[data-target="${cssEsc(id)}"]`);
+  if (chanItem) chanItem.remove();
+  const privItem = byId('priv-list').querySelector(`[data-target="${cssEsc(id)}"]`);
+  if (privItem) privItem.remove();
   if (state.currentWin === id) switchWindow('*status*');
 }
 
@@ -506,12 +513,12 @@ function switchWindow(id) {
 
   // Ocultar anterior
   const prev = byId('win-' + cssId(state.currentWin));
-  prev?.classList.add('hidden');
+  if (prev) prev.classList.add('hidden');
 
   // Mostrar nuevo
   state.currentWin = id;
   const curr = byId('win-' + cssId(id));
-  curr?.classList.remove('hidden');
+  if (curr) curr.classList.remove('hidden');
 
   // Reset unread
   if (state.windows[id]) {
@@ -521,15 +528,15 @@ function switchWindow(id) {
 
   // Actualizar sidebar seleccionado
   document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('active', 'unread', 'mention'));
-  const sideItem = document.querySelector(`.tree-item[data-target="${CSS.escape(id)}"]`);
-  sideItem?.classList.add('active');
+  const sideItem = document.querySelector(`.tree-item[data-target="${cssEsc(id)}"]`);
+  if (sideItem) sideItem.classList.add('active');
   // Quitar badge
-  const badge = sideItem?.querySelector('.ti-badge');
+  const badge = sideItem ? sideItem.querySelector('.ti-badge') : null;
   if (badge) badge.remove();
 
   // Topic bar
   const w = state.windows[id];
-  if (w?.type === 'channel') {
+  if (w && w.type === 'channel') {
     byId('topicbar-chan').textContent = id;
     updateNickListPanel(id);
   } else {
@@ -957,7 +964,10 @@ function showJoinDialog() {
     const ch = byId('md-chan').value.trim();
     if (ch) send({ type: 'JOIN', channel: ch.startsWith('#') ? ch : '#' + ch });
   });
-  setTimeout(() => byId('md-chan')?.focus(), 50);
+  setTimeout(() => {
+    const input = byId('md-chan');
+    if (input) input.focus();
+  }, 50);
 }
 
 function showQueryDialog() {
@@ -968,7 +978,10 @@ function showQueryDialog() {
     const nick = byId('md-nick').value.trim();
     if (nick) openQuery(nick);
   });
-  setTimeout(() => byId('md-nick')?.focus(), 50);
+  setTimeout(() => {
+    const input = byId('md-nick');
+    if (input) input.focus();
+  }, 50);
 }
 
 function showModal(title, body, onOk) {
@@ -1140,7 +1153,7 @@ function setConnectStatus(msg, isError) {
 }
 
 function updateSidebarBadge(winId, count) {
-  const el = document.querySelector(`.tree-item[data-target="${CSS.escape(winId)}"]`);
+  const el = document.querySelector(`.tree-item[data-target="${cssEsc(winId)}"]`);
   if (!el) return;
   el.classList.add('unread');
   let badge = el.querySelector('.ti-badge');
@@ -1153,8 +1166,15 @@ function updateSidebarBadge(winId, count) {
 }
 
 function markMention(winId) {
-  const el = document.querySelector(`.tree-item[data-target="${CSS.escape(winId)}"]`);
-  el?.classList.add('mention');
+  const el = document.querySelector(`.tree-item[data-target="${cssEsc(winId)}"]`);
+  if (el) el.classList.add('mention');
+}
+
+function cssEsc(value) {
+  if (typeof CSS !== 'undefined' && CSS.escape) {
+    return CSS.escape(value);
+  }
+  return String(value).replace(/"/g, '\\"');
 }
 
 function send(obj) {
