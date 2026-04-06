@@ -15,9 +15,8 @@ const state = {
 };
 
 const KIWI_HOST = 'kiwi.chathispano.com';
-const KIWI_PORTS = [9000, 9001, 9002, 9004];
+const KIWI_PORTS = [9000, 9001, 9002, 9003, 9004];
 const KIWI_PATH = '/webirc/kiwiirc/';
-const KIWI_SERVER = `https://${KIWI_HOST}:9000${KIWI_PATH}`;
 const DEFAULT_AUTO_CHANNEL = '#hispano';
 
 /* ─── Inicialización ─── */
@@ -121,8 +120,8 @@ function tryDirectPort(idx) {
   ws.addEventListener('message', (ev) => {
     const frame = typeof ev.data === 'string' ? ev.data : String(ev.data);
     if (frame === 'o') {
-      // SockJS open frame
-      ws.send(JSON.stringify([`:${KIWI_SERVER} CONTROL START`]));
+      // SockJS open frame: CONTROL START debe ir en texto plano.
+      ws.send(`${kiwiServerForPort(port)} CONTROL START`);
       setTimeout(() => {
         directRaw('CAP LS 302');
         directRaw(`NICK ${state.direct.nick}`);
@@ -305,6 +304,10 @@ function kiwiUrl(port) {
   const srv = String(Math.floor(Math.random() * 900) + 100);
   const session = randomHex(16);
   return `wss://${KIWI_HOST}:${port}${KIWI_PATH}${srv}/${session}/websocket`;
+}
+
+function kiwiServerForPort(port) {
+  return `https://${KIWI_HOST}:${port}${KIWI_PATH}`;
 }
 
 function randomHex(len) {
