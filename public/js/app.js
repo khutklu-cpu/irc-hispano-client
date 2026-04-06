@@ -106,6 +106,7 @@ function tryDirectPort(idx) {
   let registered = false;
   const ws = new WebSocket(url);
   state.direct.ws = ws;
+  let registerWatchdog = null;
 
   const watchdog = setTimeout(() => {
     if (!registered && ws.readyState === WebSocket.OPEN) {
@@ -120,13 +121,32 @@ function tryDirectPort(idx) {
   ws.addEventListener('message', (ev) => {
     const frame = typeof ev.data === 'string' ? ev.data : String(ev.data);
     if (frame === 'o') {
-      // SockJS open frame: CONTROL START debe ir en texto plano.
-      ws.send(`${kiwiServerForPort(port)} CONTROL START`);
-      setTimeout(() => {
-        directRaw('CAP LS 302');
-        directRaw(`NICK ${state.direct.nick}`);
-        directRaw('USER kiwi 0 * :Usuario Kiwi ChatHispano');
-      }, 120);
+      const variants = controlStartVariants(port);
+      const schedule = [0, 1200, 2400];
+
+      variants.forEach((variant, i) => {
+        setTimeout(() => {
+          if (!state.direct || state.direct.connected) return;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          addSystemMsg('*status*', `Handshake ${variant.name} en puerto ${port}...`);
+          ws.send(JSON.stringify([variant.payload]));
+          setTimeout(() => {
+            if (!state.direct || state.direct.connected) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            directRaw('CAP LS 302');
+            directRaw(`NICK ${state.direct.nick}`);
+            directRaw('USER kiwi 0 * :Usuario Kiwi ChatHispano');
+          }, 120);
+        }, schedule[i] || 0);
+      });
+
+      // Si abrió SockJS pero no llega 001, rotar endpoint.
+      registerWatchdog = setTimeout(() => {
+        if (!registered && ws.readyState === WebSocket.OPEN) {
+          addSystemMsg('*status*', `Sin registro IRC en puerto ${port}, rotando...`);
+          try { ws.close(); } catch (_) {}
+        }
+      }, 10000);
       return;
     }
     directHandleSockJsFrame(frame);
@@ -134,10 +154,16 @@ function tryDirectPort(idx) {
 
   ws.addEventListener('error', () => {
     clearTimeout(watchdog);
+    clearTimeout(registerWatchdog);
   });
 
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (ev) => {
     clearTimeout(watchdog);
+    clearTimeout(registerWatchdog);
+    if (!registered) {
+      const reason = ev && ev.reason ? ` (${ev.reason})` : '';
+      addSystemMsg('*status*', `Puerto ${port} cerrado${reason}`);
+    }
     if (!state.direct || state.direct.connected) return;
     setTimeout(() => tryDirectPort(idx + 1), 200);
   });
@@ -145,6 +171,7 @@ function tryDirectPort(idx) {
   const onConnected = () => {
     registered = true;
     clearTimeout(watchdog);
+    clearTimeout(registerWatchdog);
     state.direct.connected = true;
     handleServerMsg({ type: 'CONNECTED', nick: state.direct.nick });
     (state.pendingChannels || []).forEach((ch, n) => {
@@ -308,6 +335,14 @@ function kiwiUrl(port) {
 
 function kiwiServerForPort(port) {
   return `https://${KIWI_HOST}:${port}${KIWI_PATH}`;
+}
+
+function controlStartVariants(port) {
+  return [
+    { name: 'static-9000', payload: `:${kiwiServerForPort(9000)} CONTROL START` },
+    { name: 'dynamic-port', payload: `:${kiwiServerForPort(port)} CONTROL START` },
+    { name: 'no-colon', payload: `${kiwiServerForPort(9000)} CONTROL START` }
+  ];
 }
 
 function randomHex(len) {
