@@ -4,11 +4,9 @@
    Comunicación con backend via WebSocket
    ═══════════════════════════════════════════════════════════ */
 
-/* ─── Estado global ─── */
+       /* ─── Estado global ─── */
 const state = {
-  ws:          null,
   direct:      null,
-  connMode:    'browser',
   nick:        '',
   currentWin:  '*status*',
   windows:     {},      // id → { type, title, messages, nicks, unread, mentions }
@@ -55,7 +53,6 @@ window.addEventListener('DOMContentLoaded', () => {
 /* ─── Conexión ─── */
 
 function doConnect() {
-  state.connMode = 'browser';
   const channels = [DEFAULT_AUTO_CHANNEL];
 
   // UX: permitir reintento manual en cualquier momento.
@@ -66,56 +63,10 @@ function doConnect() {
   connectDirectBrowser();
 }
 
-function connectViaBackend(proxy) {
-  state.connMode = 'backend';
-  disconnectDirect();
-
-  // Reutilizar socket si ya está conectado
-  if (state.ws && state.ws.connected) {
-    state.ws.emit('msg', { type: 'CONNECT', proxy });
-    return;
-  }
-
-  // Desconectar socket anterior si existe
-  if (state.ws) {
-    state.ws.disconnect();
-    state.ws = null;
-  }
-
-  // Socket.IO: polling primero (funciona con proxies corporativos), luego upgrade a WS
-  const socket = io({ transports: ['polling', 'websocket'] });
-  state.ws = socket;
-
-  socket.on('connect', () => {
-    socket.emit('msg', { type: 'CONNECT', proxy });
-  });
-
-  socket.on('msg', msg => {
-    handleServerMsg(msg);
-  });
-
-  socket.on('disconnect', () => {
-    if (state.ws === socket) {
-      setStatus('Desconectado');
-      byId('sb-status').textContent = 'Desconectado';
-      byId('btn-connect').disabled = false;
-      state.ws = null;
-    }
-  });
-
-  socket.on('connect_error', () => {
-    setConnectStatus('Error de conexión', true);
-    byId('btn-connect').disabled = false;
-  });
-}
-
 function connectDirectBrowser() {
-  state.connMode = 'browser';
-  if (state.ws) {
-    try { state.ws.disconnect(); } catch (_) {}
-    state.ws = null;
+  if (state.direct) {
+    disconnectDirect();
   }
-  disconnectDirect();
 
   const nick = byId('preview-nick').textContent || randomGuestNick();
   const direct = {
@@ -165,6 +116,7 @@ function tryDirectPort(idx) {
   ws.addEventListener('message', (ev) => {
     const frame = typeof ev.data === 'string' ? ev.data : String(ev.data);
     if (frame === 'o') {
+      // SockJS open frame
       ws.send(JSON.stringify([`:${KIWI_SERVER} CONTROL START`]));
       setTimeout(() => {
         directRaw('CAP LS 302');
@@ -281,12 +233,22 @@ function directParseLine(line) {
     case 'TOPIC':
       handleServerMsg({ type: 'TOPIC', nick, channel: params[0], topic: trailing });
       break;
-    case '353':
-      handleServerMsg({ type: 'NAMES', channel: params[2], nicks: (trailing || '').split(' ').filter(Boolean) });
+    case '353': {
+      // RFC 353 format: :server 353 nick = #channel :nick1 nick2 nick3...
+      const chan = params[2];
+      const nicksList = (trailing || '').split(' ').filter(Boolean);
+      if (state.windows[chan]) {
+        state.windows[chan].nicks = nicksList;
+      }
+      handleServerMsg({ type: 'NAMES', channel: chan, nicks: nicksList });
       break;
-    case '366':
-      handleServerMsg({ type: 'NAMES_END', channel: params[1], nicks: [] });
+    }
+    case '366': {
+      // RFC 366 format: :server 366 nick #channel :End of /NAMES list
+      const chan = params[1];
+      handleServerMsg({ type: 'NAMES_END', channel: chan });
       break;
+    }
     case 'ERROR':
       handleServerMsg({ type: 'ERROR', message: trailing || rest });
       break;
@@ -356,13 +318,10 @@ function randomGuestNick() {
 }
 
 function updateConnModeUI() {
-  // UI mínima: sin opciones de modo.
+  // Sin operación — la conexión es única y directa desde el navegador
 }
 
 function doDisconnect() {
-  send({ type: 'DISCONNECT' });
-  state.ws?.disconnect();
-  state.ws = null;
   disconnectDirect();
   byId('main-screen').classList.add('hidden');
   byId('connect-screen').classList.remove('hidden');
@@ -379,7 +338,7 @@ function doDisconnect() {
 }
 
 function useTor() {
-  // UI mínima: sin configuración de proxy en frontend.
+  // Sin proxy UI — la conexión es directo desde el navegador
 }
 
 /* ─── Mensajes del servidor ─── */
@@ -418,28 +377,6 @@ function handleServerMsg(msg) {
       addErrMsg('*status*', msg.message);
       setConnectStatus(msg.message, true);
       byId('btn-connect').disabled = false;
-      break;
-
-    case 'BANNED':
-      setStatus('IP bloqueada (G-line) — usa un proxy SOCKS5');
-      addErrMsg('*status*', `Tu IP ha sido baneada por irc-hispano: ${esc(msg.message)}`);
-      addSystemMsg('*status*', 'Configura un proxy SOCKS5 o VPN en la pantalla de conexión y vuelve a intentarlo.');
-      byId('btn-connect').disabled = false;
-      // Cerrar WebSocket actual para que el próximo intento arranque limpio
-      if (state.ws) { state.ws.disconnect(); state.ws = null; }
-      // Volver a pantalla de conexión
-      setTimeout(() => {
-        byId('main-screen').classList.add('hidden');
-        byId('connect-screen').classList.remove('hidden');
-      }, 4000);
-      break;
-    case 'SERVER_ERROR':
-      addErrMsg(state.currentWin, `[${msg.code}] ${msg.message}`);
-      break;
-
-    case 'SERVER_INFO':
-    case 'MOTD':
-      addMotdMsg(msg.text || msg.message || '');
       break;
 
     case 'MESSAGE': {
@@ -520,10 +457,6 @@ function handleServerMsg(msg) {
       addSystemMsg(state.currentWin, `Whois: ${w}`);
       break;
     }
-
-    case 'RAW_IN':
-      // Solo mostrar en modo debug — no enviar al usuario normal
-      break;
 
     default:
       break;
@@ -1225,52 +1158,49 @@ function markMention(winId) {
 }
 
 function send(obj) {
-  if (state.connMode === 'browser' && state.direct) {
-    const target = obj.target || obj.channel || '';
-    switch (obj.type) {
-      case 'DISCONNECT':
-        directRaw('QUIT :Bye');
-        disconnectDirect();
-        handleServerMsg({ type: 'DISCONNECTED' });
-        break;
-      case 'JOIN':
-        if (target) directRaw(`JOIN ${target}`);
-        break;
-      case 'PART':
-        if (target) directRaw(`PART ${target}${obj.message ? ' :' + obj.message : ''}`);
-        break;
-      case 'PRIVMSG':
-        if (target && obj.text) directRaw(`PRIVMSG ${target} :${obj.text}`);
-        break;
-      case 'ACTION':
-        if (target && obj.text) directRaw(`PRIVMSG ${target} :\x01ACTION ${obj.text}\x01`);
-        break;
-      case 'TOPIC':
-        if (target) directRaw(obj.topic ? `TOPIC ${target} :${obj.topic}` : `TOPIC ${target}`);
-        break;
-      case 'KICK':
-        if (obj.channel && obj.nick) directRaw(`KICK ${obj.channel} ${obj.nick}${obj.reason ? ' :' + obj.reason : ''}`);
-        break;
-      case 'MODE':
-        if (obj.target && obj.mode) directRaw(`MODE ${obj.target} ${obj.mode}`);
-        break;
-      case 'WHOIS':
-        if (obj.nick) directRaw(`WHOIS ${obj.nick}`);
-        break;
-      case 'WHO':
-        if (obj.channel) directRaw(`WHO ${obj.channel}`);
-        break;
-      case 'NICK':
-        if (obj.nick) directRaw(`NICK ${obj.nick}`);
-        break;
-      default:
-        break;
-    }
-    return;
+  if (!state.direct) {
+    return; // No conectado
   }
 
-  if (state.ws && state.ws.connected) {
-    state.ws.emit('msg', obj);
+  const target = obj.target || obj.channel || '';
+  switch (obj.type) {
+    case 'DISCONNECT':
+      directRaw('QUIT :Bye');
+      disconnectDirect();
+      handleServerMsg({ type: 'DISCONNECTED' });
+      break;
+    case 'JOIN':
+      if (target) directRaw(`JOIN ${target}`);
+      break;
+    case 'PART':
+      if (target) directRaw(`PART ${target}${obj.message ? ' :' + obj.message : ''}`);
+      break;
+    case 'PRIVMSG':
+      if (target && obj.text) directRaw(`PRIVMSG ${target} :${obj.text}`);
+      break;
+    case 'ACTION':
+      if (target && obj.text) directRaw(`PRIVMSG ${target} :\x01ACTION ${obj.text}\x01`);
+      break;
+    case 'TOPIC':
+      if (target) directRaw(obj.topic ? `TOPIC ${target} :${obj.topic}` : `TOPIC ${target}`);
+      break;
+    case 'KICK':
+      if (obj.channel && obj.nick) directRaw(`KICK ${obj.channel} ${obj.nick}${obj.reason ? ' :' + obj.reason : ''}`);
+      break;
+    case 'MODE':
+      if (obj.target && obj.mode) directRaw(`MODE ${obj.target} ${obj.mode}`);
+      break;
+    case 'WHOIS':
+      if (obj.nick) directRaw(`WHOIS ${obj.nick}`);
+      break;
+    case 'WHO':
+      if (obj.channel) directRaw(`WHO ${obj.channel}`);
+      break;
+    case 'NICK':
+      if (obj.nick) directRaw(`NICK ${obj.nick}`);
+      break;
+    default:
+      break;
   }
 }
 
