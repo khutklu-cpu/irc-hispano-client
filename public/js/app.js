@@ -10,14 +10,15 @@ const state = {
   nick:        '',
   currentWin:  '*status*',
   windows:     {},      // id → { type, title, messages, nicks, unread, mentions }
+  reconnectAttempts: 0,
+  reconnectTimer: null,
+  manualDisconnect: false,
   histIdx:     -1,
   history:     []       // historial de comandos
 };
 
-const KIWI_HOST = 'kiwi.chathispano.com';
-const KIWI_PORTS = [9000, 9001, 9002, 9003, 9004];
-const KIWI_PATH = '/webirc/kiwiirc/';
 const DEFAULT_AUTO_CHANNEL = '#hispano';
+const FALLBACK_AUTO_CHANNEL = '#sumidero';
 
 /* ─── Inicialización ─── */
 
@@ -59,296 +60,113 @@ window.addEventListener('DOMContentLoaded', () => {
 function doConnect() {
   const channels = [DEFAULT_AUTO_CHANNEL];
 
-  // UX: permitir reintento manual en cualquier momento.
-  byId('btn-connect').disabled = false;
+  state.manualDisconnect = false;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+  state.reconnectAttempts = 0;
+
+  byId('btn-connect').disabled = true;
   setConnectStatus('Conectando...', false);
 
   state.pendingChannels = channels;
-  connectDirectBrowser();
+  connectBackendSession();
 }
 
-function connectDirectBrowser() {
-  if (state.direct) {
-    disconnectDirect();
-  }
-
-  const nick = byId('preview-nick').textContent || randomGuestNick();
-  const direct = {
-    ws: null,
-    nick,
-    connected: false,
-    buffer: '',
-    queue: [],
-    lastSent: 0,
-    msgDelay: 220,
-    pingTimer: null,
-    desiredChannels: new Set(state.pendingChannels || [])
-  };
-  state.direct = direct;
-
-  setConnectStatus('Conectando directo desde navegador...', false);
-  tryDirectPort(0);
+function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/ws`;
 }
 
-function tryDirectPort(idx) {
-  if (!state.direct) return;
-  if (idx >= KIWI_PORTS.length) {
-    setConnectStatus('No se pudo registrar IRC en modo directo', true);
-    byId('btn-connect').disabled = false;
-    addErrMsg('*status*', 'No se pudo registrar IRC en modo directo. Reintenta en unos segundos.');
+function connectBackendSession() {
+  if (state.direct && state.direct.ws && state.direct.ws.readyState === WebSocket.OPEN) {
     return;
   }
 
-  const port = KIWI_PORTS[idx];
-  const url = kiwiUrl(port);
-  addSystemMsg('*status*', `Conectando directo a ${KIWI_HOST}:${port}...`);
+  if (state.direct && state.direct.ws) {
+    try { state.direct.ws.close(); } catch (_) {}
+  }
 
-  let registered = false;
-  const ws = new WebSocket(url);
-  state.direct.ws = ws;
-  let registerWatchdog = null;
+  const requestedNick = byId('preview-nick').textContent || randomGuestNick();
+  const ws = new WebSocket(wsUrl());
 
-  const watchdog = setTimeout(() => {
-    if (!registered && ws.readyState === WebSocket.OPEN) {
-      try { ws.close(); } catch (_) {}
-    }
-  }, 14000);
+  state.direct = {
+    ws,
+    nick: requestedNick,
+    connected: false
+  };
 
   ws.addEventListener('open', () => {
-    setConnectStatus(`WebSocket abierto en puerto ${port}`, false);
+    setConnectStatus('Canal de control abierto. Iniciando sesión IRC...', false);
+    backendSend({ type: 'CONNECT', nick: requestedNick });
   });
 
   ws.addEventListener('message', (ev) => {
-    const frame = typeof ev.data === 'string' ? ev.data : String(ev.data);
-    if (frame === 'o') {
-      const variants = controlStartVariants(port);
-      const schedule = [0, 1200, 2400];
-
-      variants.forEach((variant, i) => {
-        setTimeout(() => {
-          if (!state.direct || state.direct.connected) return;
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          addSystemMsg('*status*', `Handshake ${variant.name} en puerto ${port}...`);
-          ws.send(JSON.stringify([variant.payload]));
-          setTimeout(() => {
-            if (!state.direct || state.direct.connected) return;
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            directRaw('CAP LS 302');
-            directRaw(`NICK ${state.direct.nick}`);
-            directRaw('USER kiwi 0 * :Usuario Kiwi ChatHispano');
-          }, 120);
-        }, schedule[i] || 0);
-      });
-
-      // Si abrió SockJS pero no llega 001, rotar endpoint.
-      registerWatchdog = setTimeout(() => {
-        if (!registered && ws.readyState === WebSocket.OPEN) {
-          addSystemMsg('*status*', `Sin registro IRC en puerto ${port}, rotando...`);
-          try { ws.close(); } catch (_) {}
-        }
-      }, 10000);
+    let msg;
+    try {
+      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data));
+    } catch (_) {
       return;
     }
-    directHandleSockJsFrame(frame);
+    handleServerMsg(msg);
   });
 
   ws.addEventListener('error', () => {
-    clearTimeout(watchdog);
-    clearTimeout(registerWatchdog);
+    setConnectStatus('Error de red en el canal de control', true);
   });
 
-  ws.addEventListener('close', (ev) => {
-    clearTimeout(watchdog);
-    clearTimeout(registerWatchdog);
-    if (!registered) {
-      const reason = ev && ev.reason ? ` (${ev.reason})` : '';
-      addSystemMsg('*status*', `Puerto ${port} cerrado${reason}`);
-    }
-    if (!state.direct || state.direct.connected) return;
-    setTimeout(() => tryDirectPort(idx + 1), 200);
-  });
+  ws.addEventListener('close', () => {
+    const wasConnected = !!(state.direct && state.direct.connected);
+    state.direct = null;
 
-  const onConnected = () => {
-    registered = true;
-    clearTimeout(watchdog);
-    clearTimeout(registerWatchdog);
-    state.direct.connected = true;
-    handleServerMsg({ type: 'CONNECTED', nick: state.direct.nick });
-    (state.pendingChannels || []).forEach((ch, n) => {
-      setTimeout(() => send({ type: 'JOIN', channel: ch }), n * 700);
+    if (state.manualDisconnect) return;
+
+    handleServerMsg({
+      type: 'DISCONNECTED',
+      message: wasConnected
+        ? 'Conexión cerrada. Reintentando automáticamente...'
+        : 'No se pudo establecer sesión. Reintentando...'
     });
-    state.pendingChannels = [];
-  };
-
-  state.direct._onConnected = onConnected;
+    scheduleReconnect();
+  });
 }
 
-function directHandleSockJsFrame(frame) {
-  if (!state.direct) return;
-  if (frame === 'h') return;
-  if (frame.startsWith('a')) {
-    let msgs = [];
-    try { msgs = JSON.parse(frame.slice(1)); } catch (_) { return; }
-    for (const msg of msgs) {
-      const lines = (state.direct.buffer + msg).split('\r\n');
-      state.direct.buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (line) directParseLine(line);
-      }
-    }
-    return;
+function backendSend(payload) {
+  if (!state.direct || !state.direct.ws || state.direct.ws.readyState !== WebSocket.OPEN) {
+    return false;
   }
-  if (frame.startsWith('c')) {
-    handleServerMsg({ type: 'DISCONNECTED' });
-  }
+  state.direct.ws.send(JSON.stringify(payload));
+  return true;
 }
 
-function directParseLine(line) {
-  if (!state.direct) return;
-  if (line.startsWith('PING ')) {
-    directRaw('PONG ' + line.slice(5));
-    return;
-  }
+function scheduleReconnect() {
+  if (state.manualDisconnect) return;
+  if (state.reconnectTimer) return;
 
-  const m = line.match(/^(?::([^ ]+) )?([A-Z0-9]+)(?: (.+))?$/);
-  if (!m) return;
-  const prefix = m[1] || '';
-  const command = m[2];
-  const rest = m[3] || '';
-  let params = [];
-  let trailing = '';
-  const trailIdx = rest.indexOf(' :');
-  if (trailIdx >= 0) {
-    params = rest.slice(0, trailIdx).split(' ').filter(Boolean);
-    trailing = rest.slice(trailIdx + 2);
-  } else if (rest.startsWith(':')) {
-    trailing = rest.slice(1);
-  } else {
-    params = rest.split(' ').filter(Boolean);
-  }
+  state.reconnectAttempts += 1;
+  const delay = Math.min(15000, 1000 * Math.pow(2, Math.min(state.reconnectAttempts, 4)));
+  setStatus(`Reconectando en ${Math.round(delay / 1000)}s...`);
+  setConnectStatus(`Reconectando en ${Math.round(delay / 1000)}s...`, false);
 
-  const nick = prefix.split('!')[0] || '';
-
-  switch (command) {
-    case '001':
-      state.direct.nick = params[0] || state.direct.nick;
-      state.direct.connected = true;
-      if (typeof state.direct._onConnected === 'function') state.direct._onConnected();
-      startDirectPing();
-      break;
-    case 'PRIVMSG': {
-      const target = params[0];
-      const isPriv = target === state.direct.nick;
-      handleServerMsg({
-        type: 'MESSAGE',
-        from: nick,
-        target: isPriv ? nick : target,
-        text: trailing,
-        private: isPriv,
-        notice: false
-      });
-      break;
-    }
-    case 'NOTICE':
-      handleServerMsg({ type: 'NOTICE', from: nick, target: params[0], text: trailing });
-      break;
-    case 'JOIN':
-      handleServerMsg({ type: 'JOIN', nick, channel: trailing || params[0], self: nick === state.direct.nick });
-      break;
-    case 'PART':
-      handleServerMsg({ type: 'PART', nick, channel: params[0], message: trailing, self: nick === state.direct.nick });
-      break;
-    case 'NICK':
-      handleServerMsg({ type: 'NICK_CHANGE', old: nick, new: trailing || params[0] });
-      break;
-    case 'TOPIC':
-      handleServerMsg({ type: 'TOPIC', nick, channel: params[0], topic: trailing });
-      break;
-    case '353': {
-      // RFC 353 format: :server 353 nick = #channel :nick1 nick2 nick3...
-      const chan = params[2];
-      const nicksList = (trailing || '').split(' ').filter(Boolean);
-      if (state.windows[chan]) {
-        state.windows[chan].nicks = nicksList;
-      }
-      handleServerMsg({ type: 'NAMES', channel: chan, nicks: nicksList });
-      break;
-    }
-    case '366': {
-      // RFC 366 format: :server 366 nick #channel :End of /NAMES list
-      const chan = params[1];
-      handleServerMsg({ type: 'NAMES_END', channel: chan });
-      break;
-    }
-    case 'ERROR':
-      handleServerMsg({ type: 'ERROR', message: trailing || rest });
-      break;
-    default:
-      break;
-  }
-}
-
-function directRaw(line) {
-  if (!state.direct || !state.direct.ws || state.direct.ws.readyState !== WebSocket.OPEN) return;
-  const sanitized = String(line).replace(/[\r\n\x00]/g, '').slice(0, 510);
-  const now = Date.now();
-  const elapsed = now - state.direct.lastSent;
-  if (elapsed < state.direct.msgDelay) {
-    state.direct.queue.push(sanitized + '\r\n');
-    if (state.direct.queue.length === 1) {
-      setTimeout(processDirectQueue, state.direct.msgDelay - elapsed);
-    }
-    return;
-  }
-  state.direct.ws.send(JSON.stringify([sanitized + '\r\n']));
-  state.direct.lastSent = now;
-}
-
-function processDirectQueue() {
-  if (!state.direct || state.direct.queue.length === 0) return;
-  const msg = state.direct.queue.shift();
-  if (state.direct.ws && state.direct.ws.readyState === WebSocket.OPEN) {
-    state.direct.ws.send(JSON.stringify([msg]));
-    state.direct.lastSent = Date.now();
-  }
-  if (state.direct.queue.length > 0) setTimeout(processDirectQueue, state.direct.msgDelay);
-}
-
-function startDirectPing() {
-  if (!state.direct) return;
-  clearInterval(state.direct.pingTimer);
-  state.direct.pingTimer = setInterval(() => directRaw('PING :irc.chathispano.com'), 90000);
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    connectBackendSession();
+  }, delay);
 }
 
 function disconnectDirect() {
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+  state.reconnectAttempts = 0;
+
   if (!state.direct) return;
-  clearInterval(state.direct.pingTimer);
-  try { state.direct.ws && state.direct.ws.close(); } catch (_) {}
+
+  const ws = state.direct.ws;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    backendSend({ type: 'DISCONNECT' });
+  }
+
+  try { ws && ws.close(); } catch (_) {}
   state.direct = null;
-}
-
-function kiwiUrl(port) {
-  const srv = String(Math.floor(Math.random() * 900) + 100);
-  const session = randomHex(16);
-  return `wss://${KIWI_HOST}:${port}${KIWI_PATH}${srv}/${session}/websocket`;
-}
-
-function kiwiServerForPort(port) {
-  return `https://${KIWI_HOST}:${port}${KIWI_PATH}`;
-}
-
-function controlStartVariants(port) {
-  return [
-    { name: 'static-9000', payload: `:${kiwiServerForPort(9000)} CONTROL START` },
-    { name: 'dynamic-port', payload: `:${kiwiServerForPort(port)} CONTROL START` },
-    { name: 'no-colon', payload: `${kiwiServerForPort(9000)} CONTROL START` }
-  ];
-}
-
-function randomHex(len) {
-  const arr = new Uint8Array(Math.ceil(len / 2));
-  crypto.getRandomValues(arr);
-  return [...arr].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, len);
 }
 
 function randomGuestNick() {
@@ -360,11 +178,8 @@ function randomGuestNick() {
     ADJS[Math.floor(Math.random() * ADJS.length)];
 }
 
-function updateConnModeUI() {
-  // Sin operación — la conexión es única y directa desde el navegador
-}
-
 function doDisconnect() {
+  state.manualDisconnect = true;
   disconnectDirect();
   byId('main-screen').classList.add('hidden');
   byId('connect-screen').classList.remove('hidden');
@@ -380,21 +195,26 @@ function doDisconnect() {
   createWindow('*status*', 'Status', 'status');
 }
 
-function useTor() {
-  // Sin proxy UI — la conexión es directo desde el navegador
-}
-
 /* ─── Mensajes del servidor ─── */
 
 function handleServerMsg(msg) {
   switch (msg.type) {
 
     case 'CONNECTED':
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+      state.reconnectAttempts = 0;
+      if (state.direct) {
+        state.direct.connected = true;
+        state.direct.nick = msg.nick;
+      }
       state.nick = msg.nick;
       byId('connect-screen').classList.add('hidden');
       byId('main-screen').classList.remove('hidden');
       byId('tb-nick').textContent = msg.nick;
+      byId('btn-connect').disabled = false;
       setStatus('Conectado como ' + msg.nick);
+      setConnectStatus('Conectado', false);
       addSystemMsg('*status*', `Conectado a ChatHispano como ${msg.nick}`);
       // Unirse a canales pendientes
       (state.pendingChannels || []).forEach((ch, idx) => {
@@ -405,8 +225,9 @@ function handleServerMsg(msg) {
 
     case 'DISCONNECTED':
       setStatus('Desconectado');
-      addSystemMsg('*status*', 'Conexión perdida. El servidor intentará reconectar automáticamente...');
+      addSystemMsg('*status*', msg.message || 'Conexión perdida. Reintentando automáticamente...');
       byId('btn-connect').disabled = false;
+      if (!state.manualDisconnect) scheduleReconnect();
       break;
 
     case 'STATUS':
@@ -419,7 +240,21 @@ function handleServerMsg(msg) {
       setStatus('Error: ' + msg.message);
       addErrMsg('*status*', msg.message);
       setConnectStatus(msg.message, true);
-      byId('btn-connect').disabled = false;
+
+      // ChatHispano puede denegar #hispano (496) según reputación/IP.
+      // En ese caso hacemos fallback automático a #sumidero para no bloquear la sesión.
+      if (
+        /\[496\]|No tienes permitido el acceso al canal\s+#hispano/i.test(String(msg.message || '')) &&
+        state.direct &&
+        state.direct.connected
+      ) {
+        addSystemMsg('*status*', `Fallback automático: intentando ${FALLBACK_AUTO_CHANNEL}...`);
+        send({ type: 'JOIN', channel: FALLBACK_AUTO_CHANNEL });
+      }
+
+      if (!state.manualDisconnect && (!state.direct || !state.direct.connected)) {
+        scheduleReconnect();
+      }
       break;
 
     case 'MESSAGE': {
@@ -1216,46 +1051,43 @@ function cssEsc(value) {
 }
 
 function send(obj) {
-  if (!state.direct) {
+  if (!state.direct || !state.direct.ws || state.direct.ws.readyState !== WebSocket.OPEN) {
     return; // No conectado
   }
 
-  const target = obj.target || obj.channel || '';
   switch (obj.type) {
     case 'DISCONNECT':
-      directRaw('QUIT :Bye');
-      disconnectDirect();
-      handleServerMsg({ type: 'DISCONNECTED' });
+      backendSend({ type: 'DISCONNECT' });
       break;
     case 'JOIN':
-      if (target) directRaw(`JOIN ${target}`);
+      if (obj.channel) backendSend({ type: 'JOIN', channel: obj.channel });
       break;
     case 'PART':
-      if (target) directRaw(`PART ${target}${obj.message ? ' :' + obj.message : ''}`);
+      if (obj.channel) backendSend({ type: 'PART', channel: obj.channel, message: obj.message || '' });
       break;
     case 'PRIVMSG':
-      if (target && obj.text) directRaw(`PRIVMSG ${target} :${obj.text}`);
+      if (obj.target && obj.text) backendSend({ type: 'PRIVMSG', target: obj.target, text: obj.text });
       break;
     case 'ACTION':
-      if (target && obj.text) directRaw(`PRIVMSG ${target} :\x01ACTION ${obj.text}\x01`);
+      if (obj.target && obj.text) backendSend({ type: 'ACTION', target: obj.target, text: obj.text });
       break;
     case 'TOPIC':
-      if (target) directRaw(obj.topic ? `TOPIC ${target} :${obj.topic}` : `TOPIC ${target}`);
+      if (obj.channel) backendSend({ type: 'TOPIC', channel: obj.channel, topic: obj.topic || '' });
       break;
     case 'KICK':
-      if (obj.channel && obj.nick) directRaw(`KICK ${obj.channel} ${obj.nick}${obj.reason ? ' :' + obj.reason : ''}`);
+      if (obj.channel && obj.nick) backendSend({ type: 'KICK', channel: obj.channel, nick: obj.nick, reason: obj.reason || '' });
       break;
     case 'MODE':
-      if (obj.target && obj.mode) directRaw(`MODE ${obj.target} ${obj.mode}`);
+      if (obj.target && obj.mode) backendSend({ type: 'MODE', target: obj.target, mode: obj.mode });
       break;
     case 'WHOIS':
-      if (obj.nick) directRaw(`WHOIS ${obj.nick}`);
+      if (obj.nick) backendSend({ type: 'WHOIS', nick: obj.nick });
       break;
     case 'WHO':
-      if (obj.channel) directRaw(`WHO ${obj.channel}`);
+      if (obj.channel) backendSend({ type: 'WHO', channel: obj.channel });
       break;
     case 'NICK':
-      if (obj.nick) directRaw(`NICK ${obj.nick}`);
+      if (obj.nick) backendSend({ type: 'NICK', nick: obj.nick });
       break;
     default:
       break;
